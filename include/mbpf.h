@@ -92,6 +92,13 @@ typedef enum {
 #define MBPF_CAP_TIME         (1 << 5)
 #define MBPF_CAP_STATS        (1 << 6)
 
+/* Instance mode */
+typedef enum {
+    MBPF_INSTANCE_SINGLE = 0,   /* Single instance (default) */
+    MBPF_INSTANCE_PER_CPU = 1,  /* Per-CPU instances */
+    MBPF_INSTANCE_COUNT = 2,    /* Use explicit instance_count */
+} mbpf_instance_mode_t;
+
 /* Runtime configuration */
 typedef struct mbpf_runtime_config {
     size_t default_heap_size;
@@ -101,6 +108,8 @@ typedef struct mbpf_runtime_config {
     bool require_signatures;
     bool debug_mode;
     void (*log_fn)(int level, const char *msg);
+    mbpf_instance_mode_t instance_mode;
+    uint32_t instance_count;    /* Used when instance_mode == MBPF_INSTANCE_COUNT */
 } mbpf_runtime_config_t;
 
 /* Load options */
@@ -158,6 +167,11 @@ int mbpf_run(mbpf_runtime_t *rt, mbpf_hook_id_t hook,
 
 /* Stats access */
 int mbpf_program_stats(mbpf_program_t *prog, mbpf_stats_t *out_stats);
+
+/* Instance access */
+uint32_t mbpf_program_instance_count(mbpf_program_t *prog);
+size_t mbpf_program_instance_heap_size(mbpf_program_t *prog, uint32_t idx);
+mbpf_instance_t *mbpf_program_get_instance(mbpf_program_t *prog, uint32_t idx);
 
 /* Version info */
 const char *mbpf_version_string(void);

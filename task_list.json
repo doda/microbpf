@@ -186,7 +186,7 @@
       "Verify each instance has its own JSContext with configured heap_size",
       "Verify instances are isolated from each other"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "runtime-run-basic",
