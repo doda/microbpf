@@ -173,6 +173,18 @@ typedef struct mbpf_ctx_timer_v1 {
     uint64_t timestamp;         /* Current timestamp (ns since boot or epoch) */
 } mbpf_ctx_timer_v1_t;
 
+/* NET_TX context (v1) - same structure as NET_RX for transmit path */
+typedef struct mbpf_ctx_net_tx_v1 {
+    uint32_t abi_version;   /* = 1 */
+    uint32_t ifindex;
+    uint32_t pkt_len;
+    uint32_t data_len;
+    uint16_t l2_proto;
+    uint16_t flags;
+    const uint8_t *data;
+    mbpf_read_bytes_fn read_fn;
+} mbpf_ctx_net_tx_v1_t;
+
 /* Core API */
 mbpf_runtime_t *mbpf_runtime_init(const mbpf_runtime_config_t *cfg);
 void mbpf_runtime_shutdown(mbpf_runtime_t *rt);

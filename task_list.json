@@ -292,7 +292,7 @@
       "Invoke with packet context",
       "Verify return codes affect transmission decision"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "hook-security",

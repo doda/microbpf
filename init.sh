@@ -270,6 +270,16 @@ if [ -f build/test_hook_net_rx ]; then
     fi
 fi
 
+# Run NET_TX hook tests
+if [ -f build/test_hook_net_tx ]; then
+    ./build/test_hook_net_tx
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: NET_TX hook tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
