@@ -100,6 +100,16 @@ if [ -f build/test_section_table ]; then
     fi
 fi
 
+# Run manifest tests
+if [ -f build/test_manifest ]; then
+    ./build/test_manifest
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Manifest tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

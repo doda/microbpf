@@ -54,7 +54,7 @@
       "Verify parser extracts maps array definitions",
       "Verify parser rejects manifest missing required fields"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "package-format-bytecode-section",

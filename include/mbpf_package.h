@@ -54,13 +54,19 @@ typedef struct __attribute__((packed)) {
 
 /* Map definition in manifest */
 typedef struct {
-    const char *name;
+    char name[32];
     uint32_t type;
     uint32_t key_size;
     uint32_t value_size;
     uint32_t max_entries;
     uint32_t flags;
 } mbpf_map_def_t;
+
+/* Helper version entry */
+typedef struct {
+    char name[32];
+    uint32_t version;  /* major<<16 | minor */
+} mbpf_helper_version_t;
 
 /* Budget definition */
 typedef struct {
@@ -90,6 +96,8 @@ typedef struct {
     uint32_t capabilities;
     mbpf_map_def_t *maps;
     uint32_t map_count;
+    mbpf_helper_version_t *helper_versions;
+    uint32_t helper_version_count;
 } mbpf_manifest_t;
 
 /* Package parsing API */

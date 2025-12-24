@@ -233,7 +233,982 @@ int mbpf_package_get_section(const void *data, size_t len,
     return MBPF_ERR_MISSING_SECTION;
 }
 
-/* Parse manifest (minimal JSON parser for required fields) */
+/* ============================================================================
+ * Minimal CBOR Parser for Manifest
+ * ============================================================================
+ * CBOR types relevant to manifest parsing:
+ * - Unsigned int: major 0 (0x00-0x1B)
+ * - Text string: major 3 (0x60-0x7B)
+ * - Array: major 4 (0x80-0x9B)
+ * - Map: major 5 (0xA0-0xBB)
+ */
+
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t pos;
+} cbor_reader_t;
+
+static bool cbor_has_bytes(cbor_reader_t *r, size_t n) {
+    return r->pos + n <= r->len;
+}
+
+static int cbor_read_initial_byte(cbor_reader_t *r, uint8_t *major, uint8_t *info) {
+    if (!cbor_has_bytes(r, 1)) return -1;
+    uint8_t b = r->data[r->pos++];
+    *major = b >> 5;
+    *info = b & 0x1F;
+    return 0;
+}
+
+static int cbor_read_uint(cbor_reader_t *r, uint8_t info, uint64_t *out) {
+    if (info < 24) {
+        *out = info;
+        return 0;
+    } else if (info == 24) {
+        if (!cbor_has_bytes(r, 1)) return -1;
+        *out = r->data[r->pos++];
+        return 0;
+    } else if (info == 25) {
+        if (!cbor_has_bytes(r, 2)) return -1;
+        *out = ((uint64_t)r->data[r->pos] << 8) | r->data[r->pos + 1];
+        r->pos += 2;
+        return 0;
+    } else if (info == 26) {
+        if (!cbor_has_bytes(r, 4)) return -1;
+        *out = ((uint64_t)r->data[r->pos] << 24) |
+               ((uint64_t)r->data[r->pos + 1] << 16) |
+               ((uint64_t)r->data[r->pos + 2] << 8) |
+               r->data[r->pos + 3];
+        r->pos += 4;
+        return 0;
+    } else if (info == 27) {
+        if (!cbor_has_bytes(r, 8)) return -1;
+        *out = ((uint64_t)r->data[r->pos] << 56) |
+               ((uint64_t)r->data[r->pos + 1] << 48) |
+               ((uint64_t)r->data[r->pos + 2] << 40) |
+               ((uint64_t)r->data[r->pos + 3] << 32) |
+               ((uint64_t)r->data[r->pos + 4] << 24) |
+               ((uint64_t)r->data[r->pos + 5] << 16) |
+               ((uint64_t)r->data[r->pos + 6] << 8) |
+               r->data[r->pos + 7];
+        r->pos += 8;
+        return 0;
+    }
+    return -1; /* indefinite length not supported */
+}
+
+static int cbor_read_text_string(cbor_reader_t *r, char *buf, size_t buflen) {
+    uint8_t major, info;
+    if (cbor_read_initial_byte(r, &major, &info) != 0) return -1;
+    if (major != 3) return -1;  /* Not a text string */
+
+    uint64_t slen;
+    if (cbor_read_uint(r, info, &slen) != 0) return -1;
+    if (!cbor_has_bytes(r, (size_t)slen)) return -1;
+
+    size_t copy_len = (size_t)slen < buflen - 1 ? (size_t)slen : buflen - 1;
+    memcpy(buf, r->data + r->pos, copy_len);
+    buf[copy_len] = '\0';
+    r->pos += (size_t)slen;
+    return 0;
+}
+
+static int cbor_read_unsigned(cbor_reader_t *r, uint64_t *out) {
+    uint8_t major, info;
+    if (cbor_read_initial_byte(r, &major, &info) != 0) return -1;
+    if (major != 0) return -1;  /* Not an unsigned int */
+    return cbor_read_uint(r, info, out);
+}
+
+static int cbor_peek_type(cbor_reader_t *r, uint8_t *major) {
+    if (!cbor_has_bytes(r, 1)) return -1;
+    *major = r->data[r->pos] >> 5;
+    return 0;
+}
+
+static int cbor_skip_value(cbor_reader_t *r) {
+    uint8_t major, info;
+    if (cbor_read_initial_byte(r, &major, &info) != 0) return -1;
+
+    uint64_t arg;
+    if (cbor_read_uint(r, info, &arg) != 0) return -1;
+
+    switch (major) {
+        case 0: /* unsigned int */
+        case 1: /* negative int */
+            return 0;
+        case 2: /* byte string */
+        case 3: /* text string */
+            if (!cbor_has_bytes(r, (size_t)arg)) return -1;
+            r->pos += (size_t)arg;
+            return 0;
+        case 4: /* array */
+            for (uint64_t i = 0; i < arg; i++) {
+                if (cbor_skip_value(r) != 0) return -1;
+            }
+            return 0;
+        case 5: /* map */
+            for (uint64_t i = 0; i < arg; i++) {
+                if (cbor_skip_value(r) != 0) return -1;
+                if (cbor_skip_value(r) != 0) return -1;
+            }
+            return 0;
+        case 7: /* simple/float */
+            return 0;
+        default:
+            return -1;
+    }
+}
+
+static int cbor_read_map_length(cbor_reader_t *r, uint64_t *out) {
+    uint8_t major, info;
+    if (cbor_read_initial_byte(r, &major, &info) != 0) return -1;
+    if (major != 5) return -1;  /* Not a map */
+    return cbor_read_uint(r, info, out);
+}
+
+static int cbor_read_array_length(cbor_reader_t *r, uint64_t *out) {
+    uint8_t major, info;
+    if (cbor_read_initial_byte(r, &major, &info) != 0) return -1;
+    if (major != 4) return -1;  /* Not an array */
+    return cbor_read_uint(r, info, out);
+}
+
+static int parse_target(cbor_reader_t *r, mbpf_target_t *target) {
+    uint64_t map_len;
+    if (cbor_read_map_length(r, &map_len) != 0) return -1;
+
+    for (uint64_t i = 0; i < map_len; i++) {
+        char key[32];
+        if (cbor_read_text_string(r, key, sizeof(key)) != 0) return -1;
+
+        if (strcmp(key, "word_size") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            target->word_size = (uint8_t)val;
+        } else if (strcmp(key, "endianness") == 0) {
+            uint8_t major;
+            if (cbor_peek_type(r, &major) != 0) return -1;
+            if (major == 3) { /* text string */
+                char val[16];
+                if (cbor_read_text_string(r, val, sizeof(val)) != 0) return -1;
+                target->endianness = (strcmp(val, "big") == 0) ? 1 : 0;
+            } else {
+                uint64_t val;
+                if (cbor_read_unsigned(r, &val) != 0) return -1;
+                target->endianness = (uint8_t)val;
+            }
+        } else {
+            if (cbor_skip_value(r) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int parse_budgets(cbor_reader_t *r, mbpf_budgets_t *budgets) {
+    uint64_t map_len;
+    if (cbor_read_map_length(r, &map_len) != 0) return -1;
+
+    for (uint64_t i = 0; i < map_len; i++) {
+        char key[32];
+        if (cbor_read_text_string(r, key, sizeof(key)) != 0) return -1;
+
+        if (strcmp(key, "max_steps") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            budgets->max_steps = (uint32_t)val;
+        } else if (strcmp(key, "max_helpers") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            budgets->max_helpers = (uint32_t)val;
+        } else if (strcmp(key, "max_wall_time_us") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            budgets->max_wall_time_us = (uint32_t)val;
+        } else {
+            if (cbor_skip_value(r) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int parse_capabilities(cbor_reader_t *r, uint32_t *caps) {
+    uint64_t arr_len;
+    if (cbor_read_array_length(r, &arr_len) != 0) return -1;
+
+    *caps = 0;
+    for (uint64_t i = 0; i < arr_len; i++) {
+        char cap[32];
+        if (cbor_read_text_string(r, cap, sizeof(cap)) != 0) return -1;
+
+        if (strcmp(cap, "CAP_LOG") == 0) *caps |= MBPF_CAP_LOG;
+        else if (strcmp(cap, "CAP_MAP_READ") == 0) *caps |= MBPF_CAP_MAP_READ;
+        else if (strcmp(cap, "CAP_MAP_WRITE") == 0) *caps |= MBPF_CAP_MAP_WRITE;
+        else if (strcmp(cap, "CAP_MAP_ITERATE") == 0) *caps |= MBPF_CAP_MAP_ITERATE;
+        else if (strcmp(cap, "CAP_EMIT") == 0) *caps |= MBPF_CAP_EMIT;
+        else if (strcmp(cap, "CAP_TIME") == 0) *caps |= MBPF_CAP_TIME;
+        else if (strcmp(cap, "CAP_STATS") == 0) *caps |= MBPF_CAP_STATS;
+    }
+    return 0;
+}
+
+static int parse_map_def(cbor_reader_t *r, mbpf_map_def_t *map) {
+    uint64_t map_len;
+    if (cbor_read_map_length(r, &map_len) != 0) return -1;
+
+    memset(map, 0, sizeof(*map));
+    for (uint64_t i = 0; i < map_len; i++) {
+        char key[32];
+        if (cbor_read_text_string(r, key, sizeof(key)) != 0) return -1;
+
+        if (strcmp(key, "name") == 0) {
+            if (cbor_read_text_string(r, map->name, sizeof(map->name)) != 0) return -1;
+        } else if (strcmp(key, "type") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            map->type = (uint32_t)val;
+        } else if (strcmp(key, "key_size") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            map->key_size = (uint32_t)val;
+        } else if (strcmp(key, "value_size") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            map->value_size = (uint32_t)val;
+        } else if (strcmp(key, "max_entries") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            map->max_entries = (uint32_t)val;
+        } else if (strcmp(key, "flags") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(r, &val) != 0) return -1;
+            map->flags = (uint32_t)val;
+        } else {
+            if (cbor_skip_value(r) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int parse_maps_array(cbor_reader_t *r, mbpf_manifest_t *manifest) {
+    uint64_t arr_len;
+    if (cbor_read_array_length(r, &arr_len) != 0) return -1;
+
+    if (arr_len == 0) return 0;
+
+    manifest->maps = calloc(arr_len, sizeof(mbpf_map_def_t));
+    if (!manifest->maps) return -1;
+    manifest->map_count = (uint32_t)arr_len;
+
+    for (uint64_t i = 0; i < arr_len; i++) {
+        if (parse_map_def(r, &manifest->maps[i]) != 0) return -1;
+    }
+    return 0;
+}
+
+static int parse_helper_versions(cbor_reader_t *r, mbpf_manifest_t *manifest) {
+    uint64_t map_len;
+    if (cbor_read_map_length(r, &map_len) != 0) return -1;
+
+    if (map_len == 0) return 0;
+
+    manifest->helper_versions = calloc(map_len, sizeof(mbpf_helper_version_t));
+    if (!manifest->helper_versions) return -1;
+    manifest->helper_version_count = (uint32_t)map_len;
+
+    for (uint64_t i = 0; i < map_len; i++) {
+        if (cbor_read_text_string(r, manifest->helper_versions[i].name,
+                                   sizeof(manifest->helper_versions[i].name)) != 0) {
+            return -1;
+        }
+        uint64_t val;
+        if (cbor_read_unsigned(r, &val) != 0) return -1;
+        manifest->helper_versions[i].version = (uint32_t)val;
+    }
+    return 0;
+}
+
+/* Forward declaration for JSON parser */
+static int parse_manifest_json(const void *manifest_data, size_t len,
+                                mbpf_manifest_t *out_manifest);
+
+/* Parse CBOR manifest */
+static int parse_manifest_cbor(const void *manifest_data, size_t len,
+                                mbpf_manifest_t *out_manifest) {
+    cbor_reader_t r = { .data = manifest_data, .len = len, .pos = 0 };
+
+    /* Expect top-level map */
+    uint64_t top_map_len;
+    if (cbor_read_map_length(&r, &top_map_len) != 0) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    bool has_program_name = false;
+    bool has_program_version = false;
+    bool has_hook_type = false;
+    bool has_hook_ctx_abi_version = false;
+    bool has_mquickjs_bytecode_version = false;
+    bool has_target = false;
+    bool has_mbpf_api_version = false;
+    bool has_heap_size = false;
+    bool has_budgets = false;
+    bool has_capabilities = false;
+
+    for (uint64_t i = 0; i < top_map_len; i++) {
+        char key[64];
+        if (cbor_read_text_string(&r, key, sizeof(key)) != 0) {
+            mbpf_manifest_free(out_manifest);
+            return MBPF_ERR_INVALID_PACKAGE;
+        }
+
+        if (strcmp(key, "program_name") == 0) {
+            if (cbor_read_text_string(&r, out_manifest->program_name,
+                                       sizeof(out_manifest->program_name)) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            has_program_name = true;
+        } else if (strcmp(key, "program_version") == 0) {
+            if (cbor_read_text_string(&r, out_manifest->program_version,
+                                       sizeof(out_manifest->program_version)) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            has_program_version = true;
+        } else if (strcmp(key, "hook_type") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(&r, &val) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            out_manifest->hook_type = (uint32_t)val;
+            has_hook_type = true;
+        } else if (strcmp(key, "hook_ctx_abi_version") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(&r, &val) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            out_manifest->hook_ctx_abi_version = (uint32_t)val;
+            has_hook_ctx_abi_version = true;
+        } else if (strcmp(key, "entry_symbol") == 0) {
+            if (cbor_read_text_string(&r, out_manifest->entry_symbol,
+                                       sizeof(out_manifest->entry_symbol)) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+        } else if (strcmp(key, "mquickjs_bytecode_version") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(&r, &val) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            out_manifest->mquickjs_bytecode_version = (uint32_t)val;
+            has_mquickjs_bytecode_version = true;
+        } else if (strcmp(key, "target") == 0) {
+            if (parse_target(&r, &out_manifest->target) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            has_target = true;
+        } else if (strcmp(key, "mbpf_api_version") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(&r, &val) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            out_manifest->mbpf_api_version = (uint32_t)val;
+            has_mbpf_api_version = true;
+        } else if (strcmp(key, "heap_size") == 0) {
+            uint64_t val;
+            if (cbor_read_unsigned(&r, &val) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            out_manifest->heap_size = (uint32_t)val;
+            has_heap_size = true;
+        } else if (strcmp(key, "budgets") == 0) {
+            if (parse_budgets(&r, &out_manifest->budgets) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            has_budgets = true;
+        } else if (strcmp(key, "capabilities") == 0) {
+            if (parse_capabilities(&r, &out_manifest->capabilities) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+            has_capabilities = true;
+        } else if (strcmp(key, "helper_versions") == 0) {
+            if (parse_helper_versions(&r, out_manifest) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+        } else if (strcmp(key, "maps") == 0) {
+            if (parse_maps_array(&r, out_manifest) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+        } else {
+            if (cbor_skip_value(&r) != 0) {
+                mbpf_manifest_free(out_manifest);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+        }
+    }
+
+    /* Check required fields */
+    if (!has_program_name || !has_program_version || !has_hook_type ||
+        !has_hook_ctx_abi_version || !has_mquickjs_bytecode_version ||
+        !has_target || !has_mbpf_api_version || !has_heap_size ||
+        !has_budgets || !has_capabilities) {
+        mbpf_manifest_free(out_manifest);
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    return MBPF_OK;
+}
+
+/* ============================================================================
+ * Minimal JSON Parser for Manifest
+ * ============================================================================
+ * A simple JSON parser for manifest data. Supports the subset needed for
+ * manifest parsing: objects, arrays, strings, and numbers.
+ */
+
+typedef struct {
+    const char *data;
+    size_t len;
+    size_t pos;
+} json_reader_t;
+
+static void json_skip_whitespace(json_reader_t *r) {
+    while (r->pos < r->len) {
+        char c = r->data[r->pos];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            r->pos++;
+        } else {
+            break;
+        }
+    }
+}
+
+static bool json_match_char(json_reader_t *r, char expected) {
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == expected) {
+        r->pos++;
+        return true;
+    }
+    return false;
+}
+
+static int json_read_string(json_reader_t *r, char *buf, size_t buflen) {
+    json_skip_whitespace(r);
+    if (r->pos >= r->len || r->data[r->pos] != '"') return -1;
+    r->pos++;
+
+    size_t out_pos = 0;
+    while (r->pos < r->len && r->data[r->pos] != '"') {
+        char c = r->data[r->pos++];
+        if (c == '\\' && r->pos < r->len) {
+            c = r->data[r->pos++];
+            switch (c) {
+                case 'n': c = '\n'; break;
+                case 't': c = '\t'; break;
+                case 'r': c = '\r'; break;
+                case '"': c = '"'; break;
+                case '\\': c = '\\'; break;
+                default: break;
+            }
+        }
+        if (out_pos < buflen - 1) {
+            buf[out_pos++] = c;
+        }
+    }
+    if (r->pos >= r->len) return -1;
+    r->pos++;  /* skip closing quote */
+    buf[out_pos] = '\0';
+    return 0;
+}
+
+static int json_read_number(json_reader_t *r, uint64_t *out) {
+    json_skip_whitespace(r);
+    if (r->pos >= r->len) return -1;
+
+    uint64_t val = 0;
+    bool found = false;
+    while (r->pos < r->len) {
+        char c = r->data[r->pos];
+        if (c >= '0' && c <= '9') {
+            val = val * 10 + (c - '0');
+            r->pos++;
+            found = true;
+        } else {
+            break;
+        }
+    }
+    if (!found) return -1;
+    *out = val;
+    return 0;
+}
+
+static int json_skip_value(json_reader_t *r);
+
+static int json_skip_string(json_reader_t *r) {
+    char buf[256];
+    return json_read_string(r, buf, sizeof(buf));
+}
+
+static int json_skip_number(json_reader_t *r) {
+    json_skip_whitespace(r);
+    bool found = false;
+    while (r->pos < r->len) {
+        char c = r->data[r->pos];
+        if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') {
+            r->pos++;
+            found = true;
+        } else {
+            break;
+        }
+    }
+    return found ? 0 : -1;
+}
+
+static int json_skip_array(json_reader_t *r) {
+    if (!json_match_char(r, '[')) return -1;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == ']') {
+        r->pos++;
+        return 0;
+    }
+    while (1) {
+        if (json_skip_value(r) != 0) return -1;
+        json_skip_whitespace(r);
+        if (r->pos < r->len && r->data[r->pos] == ',') {
+            r->pos++;
+        } else if (r->pos < r->len && r->data[r->pos] == ']') {
+            r->pos++;
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+}
+
+static int json_skip_object(json_reader_t *r) {
+    if (!json_match_char(r, '{')) return -1;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == '}') {
+        r->pos++;
+        return 0;
+    }
+    while (1) {
+        if (json_skip_string(r) != 0) return -1;
+        if (!json_match_char(r, ':')) return -1;
+        if (json_skip_value(r) != 0) return -1;
+        json_skip_whitespace(r);
+        if (r->pos < r->len && r->data[r->pos] == ',') {
+            r->pos++;
+        } else if (r->pos < r->len && r->data[r->pos] == '}') {
+            r->pos++;
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+}
+
+static int json_skip_value(json_reader_t *r) {
+    json_skip_whitespace(r);
+    if (r->pos >= r->len) return -1;
+    char c = r->data[r->pos];
+    if (c == '"') return json_skip_string(r);
+    if (c == '{') return json_skip_object(r);
+    if (c == '[') return json_skip_array(r);
+    if ((c >= '0' && c <= '9') || c == '-') return json_skip_number(r);
+    /* Handle true, false, null */
+    if (r->pos + 4 <= r->len && strncmp(&r->data[r->pos], "true", 4) == 0) {
+        r->pos += 4; return 0;
+    }
+    if (r->pos + 5 <= r->len && strncmp(&r->data[r->pos], "false", 5) == 0) {
+        r->pos += 5; return 0;
+    }
+    if (r->pos + 4 <= r->len && strncmp(&r->data[r->pos], "null", 4) == 0) {
+        r->pos += 4; return 0;
+    }
+    return -1;
+}
+
+static int json_parse_target(json_reader_t *r, mbpf_target_t *target) {
+    if (!json_match_char(r, '{')) return -1;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == '}') {
+        r->pos++;
+        return 0;
+    }
+    while (1) {
+        char key[32];
+        if (json_read_string(r, key, sizeof(key)) != 0) return -1;
+        if (!json_match_char(r, ':')) return -1;
+
+        if (strcmp(key, "word_size") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            target->word_size = (uint8_t)val;
+        } else if (strcmp(key, "endianness") == 0) {
+            json_skip_whitespace(r);
+            if (r->pos < r->len && r->data[r->pos] == '"') {
+                char val[16];
+                if (json_read_string(r, val, sizeof(val)) != 0) return -1;
+                target->endianness = (strcmp(val, "big") == 0) ? 1 : 0;
+            } else {
+                uint64_t val;
+                if (json_read_number(r, &val) != 0) return -1;
+                target->endianness = (uint8_t)val;
+            }
+        } else {
+            if (json_skip_value(r) != 0) return -1;
+        }
+
+        json_skip_whitespace(r);
+        if (r->pos < r->len && r->data[r->pos] == ',') {
+            r->pos++;
+        } else if (r->pos < r->len && r->data[r->pos] == '}') {
+            r->pos++;
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+}
+
+static int json_parse_budgets(json_reader_t *r, mbpf_budgets_t *budgets) {
+    if (!json_match_char(r, '{')) return -1;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == '}') {
+        r->pos++;
+        return 0;
+    }
+    while (1) {
+        char key[32];
+        if (json_read_string(r, key, sizeof(key)) != 0) return -1;
+        if (!json_match_char(r, ':')) return -1;
+
+        if (strcmp(key, "max_steps") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            budgets->max_steps = (uint32_t)val;
+        } else if (strcmp(key, "max_helpers") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            budgets->max_helpers = (uint32_t)val;
+        } else if (strcmp(key, "max_wall_time_us") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            budgets->max_wall_time_us = (uint32_t)val;
+        } else {
+            if (json_skip_value(r) != 0) return -1;
+        }
+
+        json_skip_whitespace(r);
+        if (r->pos < r->len && r->data[r->pos] == ',') {
+            r->pos++;
+        } else if (r->pos < r->len && r->data[r->pos] == '}') {
+            r->pos++;
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+}
+
+static int json_parse_capabilities(json_reader_t *r, uint32_t *caps) {
+    if (!json_match_char(r, '[')) return -1;
+    *caps = 0;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == ']') {
+        r->pos++;
+        return 0;
+    }
+    while (1) {
+        char cap[32];
+        if (json_read_string(r, cap, sizeof(cap)) != 0) return -1;
+
+        if (strcmp(cap, "CAP_LOG") == 0) *caps |= MBPF_CAP_LOG;
+        else if (strcmp(cap, "CAP_MAP_READ") == 0) *caps |= MBPF_CAP_MAP_READ;
+        else if (strcmp(cap, "CAP_MAP_WRITE") == 0) *caps |= MBPF_CAP_MAP_WRITE;
+        else if (strcmp(cap, "CAP_MAP_ITERATE") == 0) *caps |= MBPF_CAP_MAP_ITERATE;
+        else if (strcmp(cap, "CAP_EMIT") == 0) *caps |= MBPF_CAP_EMIT;
+        else if (strcmp(cap, "CAP_TIME") == 0) *caps |= MBPF_CAP_TIME;
+        else if (strcmp(cap, "CAP_STATS") == 0) *caps |= MBPF_CAP_STATS;
+
+        json_skip_whitespace(r);
+        if (r->pos < r->len && r->data[r->pos] == ',') {
+            r->pos++;
+        } else if (r->pos < r->len && r->data[r->pos] == ']') {
+            r->pos++;
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+}
+
+static int json_parse_map_def(json_reader_t *r, mbpf_map_def_t *map) {
+    memset(map, 0, sizeof(*map));
+    if (!json_match_char(r, '{')) return -1;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == '}') {
+        r->pos++;
+        return 0;
+    }
+    while (1) {
+        char key[32];
+        if (json_read_string(r, key, sizeof(key)) != 0) return -1;
+        if (!json_match_char(r, ':')) return -1;
+
+        if (strcmp(key, "name") == 0) {
+            if (json_read_string(r, map->name, sizeof(map->name)) != 0) return -1;
+        } else if (strcmp(key, "type") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            map->type = (uint32_t)val;
+        } else if (strcmp(key, "key_size") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            map->key_size = (uint32_t)val;
+        } else if (strcmp(key, "value_size") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            map->value_size = (uint32_t)val;
+        } else if (strcmp(key, "max_entries") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            map->max_entries = (uint32_t)val;
+        } else if (strcmp(key, "flags") == 0) {
+            uint64_t val;
+            if (json_read_number(r, &val) != 0) return -1;
+            map->flags = (uint32_t)val;
+        } else {
+            if (json_skip_value(r) != 0) return -1;
+        }
+
+        json_skip_whitespace(r);
+        if (r->pos < r->len && r->data[r->pos] == ',') {
+            r->pos++;
+        } else if (r->pos < r->len && r->data[r->pos] == '}') {
+            r->pos++;
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+}
+
+static int json_parse_maps_array(json_reader_t *r, mbpf_manifest_t *manifest) {
+    if (!json_match_char(r, '[')) return -1;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == ']') {
+        r->pos++;
+        return 0;
+    }
+
+    /* Count items first */
+    size_t start = r->pos;
+    uint32_t count = 0;
+    int depth = 0;
+    while (r->pos < r->len) {
+        char c = r->data[r->pos];
+        if (c == '{') depth++;
+        else if (c == '}') {
+            depth--;
+            if (depth == 0) count++;
+        }
+        else if (c == ']' && depth == 0) break;
+        r->pos++;
+    }
+    r->pos = start;
+
+    if (count == 0) {
+        if (!json_match_char(r, ']')) return -1;
+        return 0;
+    }
+
+    manifest->maps = calloc(count, sizeof(mbpf_map_def_t));
+    if (!manifest->maps) return -1;
+    manifest->map_count = count;
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (json_parse_map_def(r, &manifest->maps[i]) != 0) return -1;
+        json_skip_whitespace(r);
+        if (i < count - 1) {
+            if (!json_match_char(r, ',')) return -1;
+        }
+    }
+
+    if (!json_match_char(r, ']')) return -1;
+    return 0;
+}
+
+static int json_parse_helper_versions(json_reader_t *r, mbpf_manifest_t *manifest) {
+    if (!json_match_char(r, '{')) return -1;
+    json_skip_whitespace(r);
+    if (r->pos < r->len && r->data[r->pos] == '}') {
+        r->pos++;
+        return 0;
+    }
+
+    /* Count entries first */
+    size_t start = r->pos;
+    uint32_t count = 0;
+    int depth = 0;
+    while (r->pos < r->len) {
+        char c = r->data[r->pos];
+        if (c == '"' && depth == 0) count++;
+        else if (c == '{') depth++;
+        else if (c == '}') {
+            if (depth == 0) break;
+            depth--;
+        }
+        r->pos++;
+    }
+    count = count / 2;  /* pairs of key/value strings */
+    r->pos = start;
+
+    if (count == 0) {
+        if (!json_match_char(r, '}')) return -1;
+        return 0;
+    }
+
+    manifest->helper_versions = calloc(count, sizeof(mbpf_helper_version_t));
+    if (!manifest->helper_versions) return -1;
+    manifest->helper_version_count = count;
+
+    for (uint32_t i = 0; i < count; i++) {
+        if (json_read_string(r, manifest->helper_versions[i].name,
+                              sizeof(manifest->helper_versions[i].name)) != 0) return -1;
+        if (!json_match_char(r, ':')) return -1;
+        uint64_t val;
+        if (json_read_number(r, &val) != 0) return -1;
+        manifest->helper_versions[i].version = (uint32_t)val;
+
+        json_skip_whitespace(r);
+        if (r->pos < r->len && r->data[r->pos] == ',') {
+            r->pos++;
+        } else if (r->pos < r->len && r->data[r->pos] == '}') {
+            r->pos++;
+            return 0;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int parse_manifest_json(const void *manifest_data, size_t len,
+                                mbpf_manifest_t *out_manifest) {
+    json_reader_t r = { .data = manifest_data, .len = len, .pos = 0 };
+
+    if (!json_match_char(&r, '{')) return -1;
+
+    bool has_program_name = false;
+    bool has_program_version = false;
+    bool has_hook_type = false;
+    bool has_hook_ctx_abi_version = false;
+    bool has_mquickjs_bytecode_version = false;
+    bool has_target = false;
+    bool has_mbpf_api_version = false;
+    bool has_heap_size = false;
+    bool has_budgets = false;
+    bool has_capabilities = false;
+
+    json_skip_whitespace(&r);
+    if (r.pos < r.len && r.data[r.pos] == '}') {
+        return -1;  /* Empty object missing required fields */
+    }
+
+    while (1) {
+        char key[64];
+        if (json_read_string(&r, key, sizeof(key)) != 0) return -1;
+        if (!json_match_char(&r, ':')) return -1;
+
+        if (strcmp(key, "program_name") == 0) {
+            if (json_read_string(&r, out_manifest->program_name,
+                                  sizeof(out_manifest->program_name)) != 0) return -1;
+            has_program_name = true;
+        } else if (strcmp(key, "program_version") == 0) {
+            if (json_read_string(&r, out_manifest->program_version,
+                                  sizeof(out_manifest->program_version)) != 0) return -1;
+            has_program_version = true;
+        } else if (strcmp(key, "hook_type") == 0) {
+            uint64_t val;
+            if (json_read_number(&r, &val) != 0) return -1;
+            out_manifest->hook_type = (uint32_t)val;
+            has_hook_type = true;
+        } else if (strcmp(key, "hook_ctx_abi_version") == 0) {
+            uint64_t val;
+            if (json_read_number(&r, &val) != 0) return -1;
+            out_manifest->hook_ctx_abi_version = (uint32_t)val;
+            has_hook_ctx_abi_version = true;
+        } else if (strcmp(key, "entry_symbol") == 0) {
+            if (json_read_string(&r, out_manifest->entry_symbol,
+                                  sizeof(out_manifest->entry_symbol)) != 0) return -1;
+        } else if (strcmp(key, "mquickjs_bytecode_version") == 0) {
+            uint64_t val;
+            if (json_read_number(&r, &val) != 0) return -1;
+            out_manifest->mquickjs_bytecode_version = (uint32_t)val;
+            has_mquickjs_bytecode_version = true;
+        } else if (strcmp(key, "target") == 0) {
+            if (json_parse_target(&r, &out_manifest->target) != 0) return -1;
+            has_target = true;
+        } else if (strcmp(key, "mbpf_api_version") == 0) {
+            uint64_t val;
+            if (json_read_number(&r, &val) != 0) return -1;
+            out_manifest->mbpf_api_version = (uint32_t)val;
+            has_mbpf_api_version = true;
+        } else if (strcmp(key, "heap_size") == 0) {
+            uint64_t val;
+            if (json_read_number(&r, &val) != 0) return -1;
+            out_manifest->heap_size = (uint32_t)val;
+            has_heap_size = true;
+        } else if (strcmp(key, "budgets") == 0) {
+            if (json_parse_budgets(&r, &out_manifest->budgets) != 0) return -1;
+            has_budgets = true;
+        } else if (strcmp(key, "capabilities") == 0) {
+            if (json_parse_capabilities(&r, &out_manifest->capabilities) != 0) return -1;
+            has_capabilities = true;
+        } else if (strcmp(key, "helper_versions") == 0) {
+            if (json_parse_helper_versions(&r, out_manifest) != 0) return -1;
+        } else if (strcmp(key, "maps") == 0) {
+            if (json_parse_maps_array(&r, out_manifest) != 0) return -1;
+        } else {
+            if (json_skip_value(&r) != 0) return -1;
+        }
+
+        json_skip_whitespace(&r);
+        if (r.pos < r.len && r.data[r.pos] == ',') {
+            r.pos++;
+        } else if (r.pos < r.len && r.data[r.pos] == '}') {
+            r.pos++;
+            break;
+        } else {
+            return -1;
+        }
+    }
+
+    /* Check required fields */
+    if (!has_program_name || !has_program_version || !has_hook_type ||
+        !has_hook_ctx_abi_version || !has_mquickjs_bytecode_version ||
+        !has_target || !has_mbpf_api_version || !has_heap_size ||
+        !has_budgets || !has_capabilities) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Parse manifest - supports both CBOR and JSON formats */
 int mbpf_package_parse_manifest(const void *manifest_data, size_t len,
                                  mbpf_manifest_t *out_manifest) {
     if (!manifest_data || !out_manifest) {
@@ -249,13 +1224,32 @@ int mbpf_package_parse_manifest(const void *manifest_data, size_t len,
     out_manifest->target.word_size = sizeof(void*) == 8 ? 64 : 32;
     out_manifest->target.endianness = 0; /* little */
 
-    /* TODO: Implement proper CBOR/JSON parsing */
-    /* For now, just validate it's not empty */
     if (len == 0) {
         return MBPF_ERR_INVALID_PACKAGE;
     }
 
-    return MBPF_OK;
+    const uint8_t *data = manifest_data;
+
+    /* Detect format: CBOR maps start with 0xA0-0xBB or 0xBF, JSON starts with '{' */
+    uint8_t first_byte = data[0];
+    bool is_cbor = (first_byte >= 0xA0 && first_byte <= 0xBB) || first_byte == 0xBF;
+
+    int err;
+    if (is_cbor) {
+        err = parse_manifest_cbor(manifest_data, len, out_manifest);
+    } else if (first_byte == '{' || first_byte == ' ' || first_byte == '\t' ||
+               first_byte == '\n' || first_byte == '\r') {
+        /* Try JSON (may start with whitespace before '{') */
+        err = parse_manifest_json(manifest_data, len, out_manifest);
+        if (err != 0) {
+            mbpf_manifest_free(out_manifest);
+            return MBPF_ERR_INVALID_PACKAGE;
+        }
+    } else {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    return err;
 }
 
 /* Free manifest resources */
@@ -267,6 +1261,12 @@ void mbpf_manifest_free(mbpf_manifest_t *manifest) {
         manifest->maps = NULL;
     }
     manifest->map_count = 0;
+
+    if (manifest->helper_versions) {
+        free(manifest->helper_versions);
+        manifest->helper_versions = NULL;
+    }
+    manifest->helper_version_count = 0;
 }
 
 /* Validate CRCs */
