@@ -120,7 +120,7 @@
       "Verify out_prog pointer is set to valid mbpf_program_t",
       "Verify program can be retrieved/identified after loading"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "program-load-validation",

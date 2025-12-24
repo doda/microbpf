@@ -39,6 +39,7 @@ TEST_BYTECODE = $(BUILD_DIR)/test_bytecode
 TEST_CRC = $(BUILD_DIR)/test_crc
 TEST_SIGNING = $(BUILD_DIR)/test_signing
 TEST_RUNTIME = $(BUILD_DIR)/test_runtime
+TEST_PROGRAM_LOAD = $(BUILD_DIR)/test_program_load
 CREATE_MBPF = $(BUILD_DIR)/create_mbpf
 MQJS = $(MQUICKJS_DIR)/mqjs
 
@@ -47,7 +48,7 @@ SANITIZE_FLAGS = -fsanitize=address,leak -fno-omit-frame-pointer
 
 .PHONY: all clean test mquickjs tools
 
-all: $(LIB) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_PARSE_FILE) $(TEST_SECTION_TABLE) $(TEST_MANIFEST) $(TEST_BYTECODE) $(TEST_CRC) $(TEST_SIGNING) $(TEST_RUNTIME) $(CREATE_MBPF) $(MQJS)
+all: $(LIB) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_PARSE_FILE) $(TEST_SECTION_TABLE) $(TEST_MANIFEST) $(TEST_BYTECODE) $(TEST_CRC) $(TEST_SIGNING) $(TEST_RUNTIME) $(TEST_PROGRAM_LOAD) $(CREATE_MBPF) $(MQJS)
 
 tools: $(CREATE_MBPF)
 
@@ -110,12 +111,15 @@ $(BUILD_DIR)/test_signing: $(TEST_DIR)/test_signing.c $(LIB) | $(BUILD_DIR)
 $(BUILD_DIR)/test_runtime: $(TEST_DIR)/test_runtime.c $(LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
+$(BUILD_DIR)/test_program_load: $(TEST_DIR)/test_program_load.c $(LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
+
 # Tool binaries
 $(BUILD_DIR)/create_mbpf: $(TOOLS_DIR)/create_mbpf.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Run tests
-test: $(MQJS) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_SECTION_TABLE) $(TEST_MANIFEST) $(TEST_BYTECODE) $(TEST_CRC) $(TEST_SIGNING) $(TEST_RUNTIME)
+test: $(MQJS) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_SECTION_TABLE) $(TEST_MANIFEST) $(TEST_BYTECODE) $(TEST_CRC) $(TEST_SIGNING) $(TEST_RUNTIME) $(TEST_PROGRAM_LOAD)
 	./$(TEST_BIN)
 	./$(TEST_PKG_HEADER)
 	./$(TEST_SECTION_TABLE)
@@ -124,6 +128,7 @@ test: $(MQJS) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_SECTION_TABLE) $(TEST_MANIFE
 	./$(TEST_CRC)
 	./$(TEST_SIGNING)
 	./$(TEST_RUNTIME)
+	./$(TEST_PROGRAM_LOAD)
 
 # Build and run with sanitizers (for memory leak detection)
 .PHONY: test-sanitize

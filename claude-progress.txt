@@ -35,3 +35,4 @@ NOT YET IMPLEMENTED. First working agent should start with "project-setup" task.
 - 2025-12-24: Added CRC32 validation for package headers/sections with tests.
 - 2025-12-24: Added Ed25519 package signature verification, header APIs, and signing tests.
 - 2025-12-24: Reviewed and validated runtime init/shutdown APIs with runtime tests.
+- 2025-12-24: Verified mbpf_program_load basic behavior with new program load tests.
