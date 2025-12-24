@@ -48,6 +48,11 @@ typedef uint32_t mbpf_hook_id_t;
 #define MBPF_NET_DROP  1
 #define MBPF_NET_ABORT 2
 
+/* Return codes for security hooks */
+#define MBPF_SEC_ALLOW 0   /* Allow the operation */
+#define MBPF_SEC_DENY  1   /* Deny the operation */
+#define MBPF_SEC_ABORT 2   /* Abort (program error, fall through to default) */
+
 /* Map types */
 typedef enum {
     MBPF_MAP_TYPE_ARRAY   = 1,
@@ -184,6 +189,19 @@ typedef struct mbpf_ctx_net_tx_v1 {
     const uint8_t *data;
     mbpf_read_bytes_fn read_fn;
 } mbpf_ctx_net_tx_v1_t;
+
+/* SECURITY context (v1) - for authorization decisions */
+typedef struct mbpf_ctx_security_v1 {
+    uint32_t abi_version;   /* = 1 */
+    uint32_t subject_id;    /* ID of the subject (e.g., process, user, or principal) */
+    uint32_t object_id;     /* ID of the object (e.g., resource, file, or target) */
+    uint32_t action;        /* Action/operation being requested */
+    uint16_t flags;         /* Context flags */
+    uint16_t reserved;      /* Padding for alignment */
+    uint32_t data_len;      /* Length of optional context data */
+    const uint8_t *data;    /* Optional context-specific data */
+    mbpf_read_bytes_fn read_fn; /* Optional scatter-gather reader */
+} mbpf_ctx_security_v1_t;
 
 /* Core API */
 mbpf_runtime_t *mbpf_runtime_init(const mbpf_runtime_config_t *cfg);

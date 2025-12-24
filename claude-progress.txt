@@ -49,3 +49,4 @@ instance-creation: reviewed and fixed per-CPU instance selection guard
 - 2025-12-24: Reviewed and validated MBPF_HOOK_TIMER context binding and tests.
 - 2025-12-24: Reviewed and validated MBPF_HOOK_NET_RX decision hook tests.
 - 2025-12-24: Reviewed and validated MBPF_HOOK_NET_TX hook tests and context.
+- 2025-12-24: Reviewed and validated MBPF_HOOK_SECURITY authorization hook with new security context tests.

@@ -924,6 +924,177 @@ static JSValue create_tracepoint_ctx(JSContext *ctx, const void *ctx_blob, size_
 }
 
 /*
+ * Create a SECURITY context object from ctx_blob.
+ * Returns JS object with read-only subject_id, object_id, action, data_len,
+ * flags properties and readU8, readU16LE, readU32LE, readBytes methods.
+ */
+static JSValue create_security_ctx(JSContext *ctx, const void *ctx_blob, size_t ctx_len) {
+    if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_security_v1_t)) {
+        return JS_NULL;
+    }
+
+    const mbpf_ctx_security_v1_t *sec_ctx = (const mbpf_ctx_security_v1_t *)ctx_blob;
+
+    /* Determine if we have data to embed */
+    const uint8_t *data = sec_ctx->data;
+    uint32_t data_len = sec_ctx->data_len;
+    uint8_t *owned_data = NULL;
+
+    /* If no contiguous data but a read_fn is provided, snapshot via read_fn. */
+    if (!data && sec_ctx->read_fn && data_len > 0) {
+        owned_data = malloc(data_len);
+        if (!owned_data) {
+            return JS_NULL;
+        }
+
+        int read_rc = sec_ctx->read_fn(ctx_blob, 0, data_len, owned_data);
+        if (read_rc <= 0) {
+            free(owned_data);
+            owned_data = NULL;
+            data = NULL;
+            data_len = 0;
+        } else {
+            data = owned_data;
+            if ((uint32_t)read_rc < data_len) {
+                data_len = (uint32_t)read_rc;
+            }
+        }
+    }
+
+    /* Build JS code to create a new object. */
+    size_t code_size = 2512;
+    if (data && data_len > 0) {
+        code_size += data_len * 5;
+    }
+
+    char *code = malloc(code_size);
+    if (!code) {
+        free(owned_data);
+        return JS_NULL;
+    }
+
+    char *p = code;
+    size_t remaining = code_size;
+    int written;
+
+    /* Start the IIFE */
+    written = snprintf(p, remaining, "(function(){var o={};");
+    p += written;
+    remaining -= written;
+
+    /* Add read-only scalar properties */
+    written = snprintf(p, remaining,
+        "Object.defineProperty(o,'subject_id',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'object_id',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'action',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'data_len',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'flags',{get:function(){return %u;},set:function(){}});",
+        sec_ctx->subject_id,
+        sec_ctx->object_id,
+        sec_ctx->action,
+        sec_ctx->data_len,
+        (uint32_t)sec_ctx->flags);
+    p += written;
+    remaining -= written;
+
+    /* Add data buffer and read methods if data is available */
+    if (data && data_len > 0) {
+        /* Create internal data array */
+        written = snprintf(p, remaining, "var d=new Uint8Array([");
+        p += written;
+        remaining -= written;
+
+        for (uint32_t i = 0; i < data_len; i++) {
+            if (i > 0) {
+                *p++ = ',';
+                remaining--;
+            }
+            written = snprintf(p, remaining, "%u", data[i]);
+            p += written;
+            remaining -= written;
+        }
+
+        written = snprintf(p, remaining, "]);");
+        p += written;
+        remaining -= written;
+
+        /* Add readU8 method */
+        written = snprintf(p, remaining,
+            "o.readU8=function(off){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(off>=d.length)throw new RangeError('offset out of bounds');"
+            "return d[off];"
+            "};");
+        p += written;
+        remaining -= written;
+
+        /* Add readU16LE method */
+        written = snprintf(p, remaining,
+            "o.readU16LE=function(off){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(off+2>d.length)throw new RangeError('offset out of bounds');"
+            "return d[off]|(d[off+1]<<8);"
+            "};");
+        p += written;
+        remaining -= written;
+
+        /* Add readU32LE method */
+        written = snprintf(p, remaining,
+            "o.readU32LE=function(off){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(off+4>d.length)throw new RangeError('offset out of bounds');"
+            "return (d[off]|(d[off+1]<<8)|(d[off+2]<<16)|(d[off+3]<<24))>>>0;"
+            "};");
+        p += written;
+        remaining -= written;
+
+        /* Add readBytes method */
+        written = snprintf(p, remaining,
+            "o.readBytes=function(off,len,buf){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(typeof len!=='number')throw new TypeError('length must be a number');"
+            "if(!(buf instanceof Uint8Array))throw new TypeError('outBuffer must be a Uint8Array');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(len<0)throw new RangeError('length must be non-negative');"
+            "if(off>=d.length)throw new RangeError('offset out of bounds');"
+            "var n=len;if(off+n>d.length)n=d.length-off;if(n>buf.length)n=buf.length;"
+            "for(var i=0;i<n;i++)buf[i]=d[off+i];"
+            "return n;"
+            "};");
+        p += written;
+        remaining -= written;
+    } else {
+        /* No data available - add methods that always throw */
+        written = snprintf(p, remaining,
+            "o.readU8=function(){throw new RangeError('no data available');};"
+            "o.readU16LE=function(){throw new RangeError('no data available');};"
+            "o.readU32LE=function(){throw new RangeError('no data available');};"
+            "o.readBytes=function(){throw new RangeError('no data available');};");
+        p += written;
+        remaining -= written;
+    }
+
+    /* Close the IIFE and return the object */
+    written = snprintf(p, remaining, "return o;})()");
+    p += written;
+
+    JSValue result = JS_Eval(ctx, code, strlen(code), "<ctx>", JS_EVAL_RETVAL);
+    free(code);
+    free(owned_data);
+
+    if (JS_IsException(result)) {
+        JSValue ex = JS_GetException(ctx);
+        (void)ex;
+        return JS_NULL;
+    }
+
+    return result;
+}
+
+/*
  * Create a context object from ctx_blob based on the hook type.
  * Returns a JS object with hook-specific properties.
  */
@@ -941,6 +1112,8 @@ static JSValue create_hook_ctx(JSContext *ctx, mbpf_hook_id_t hook,
             return create_timer_ctx(ctx, ctx_blob, ctx_len);
 
         case MBPF_HOOK_SECURITY:
+            return create_security_ctx(ctx, ctx_blob, ctx_len);
+
         case MBPF_HOOK_CUSTOM:
         default:
             /* For hooks without context structure, pass null */
