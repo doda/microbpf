@@ -406,7 +406,7 @@
       "Call maps.myhash.delete(keyBuffer) - verify returns true",
       "Call maps.myhash.lookup(keyBuffer, outBuffer) - verify returns false after delete"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-hash-collision",

@@ -30,6 +30,20 @@ typedef struct mbpf_array_map {
 } mbpf_array_map_t;
 
 /*
+ * Runtime hash map storage.
+ * Uses open addressing with linear probing.
+ * Each bucket stores: valid flag, key bytes, value bytes.
+ */
+typedef struct mbpf_hash_map {
+    uint32_t max_entries;       /* Maximum number of entries */
+    uint32_t key_size;          /* Size of each key in bytes */
+    uint32_t value_size;        /* Size of each value in bytes */
+    uint32_t count;             /* Current number of entries */
+    uint8_t *buckets;           /* Bucket array: max_entries * (1 + key_size + value_size) bytes */
+                                /* Each bucket: [valid:1][key:key_size][value:value_size] */
+} mbpf_hash_map_t;
+
+/*
  * Generic map storage container.
  */
 typedef struct mbpf_map_storage {
@@ -37,6 +51,7 @@ typedef struct mbpf_map_storage {
     uint32_t type;              /* Map type (MBPF_MAP_TYPE_*) */
     union {
         mbpf_array_map_t array;
+        mbpf_hash_map_t hash;
     } u;
 } mbpf_map_storage_t;
 
@@ -142,8 +157,21 @@ static int create_maps_from_manifest(mbpf_program_t *prog) {
                 arr->values = NULL;
                 goto cleanup;
             }
+        } else if (def->type == MBPF_MAP_TYPE_HASH) {
+            mbpf_hash_map_t *hash = &storage->u.hash;
+            hash->max_entries = def->max_entries;
+            hash->key_size = def->key_size;
+            hash->value_size = def->value_size;
+            hash->count = 0;
+
+            /* Allocate bucket storage: each bucket is [valid:1][key][value] */
+            size_t bucket_size = 1 + hash->key_size + hash->value_size;
+            size_t buckets_size = (size_t)hash->max_entries * bucket_size;
+            hash->buckets = calloc(buckets_size, 1);
+            if (!hash->buckets) {
+                goto cleanup;
+            }
         }
-        /* TODO: Add hash map and other types here */
     }
 
     return 0;
@@ -155,6 +183,8 @@ cleanup:
         if (storage->type == MBPF_MAP_TYPE_ARRAY) {
             free(storage->u.array.values);
             free(storage->u.array.valid);
+        } else if (storage->type == MBPF_MAP_TYPE_HASH) {
+            free(storage->u.hash.buckets);
         }
     }
     free(prog->maps);
@@ -174,6 +204,8 @@ static void free_maps(mbpf_program_t *prog) {
         if (storage->type == MBPF_MAP_TYPE_ARRAY) {
             free(storage->u.array.values);
             free(storage->u.array.valid);
+        } else if (storage->type == MBPF_MAP_TYPE_HASH) {
+            free(storage->u.hash.buckets);
         }
     }
     free(prog->maps);
@@ -195,9 +227,9 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog) {
      * that reference internal data arrays by index. */
 
     /* First, estimate buffer size needed */
-    size_t code_size = 2048;  /* Base size for boilerplate */
+    size_t code_size = 4096;  /* Base size for boilerplate */
     for (uint32_t i = 0; i < prog->map_count; i++) {
-        code_size += 2048;  /* ~2KB per map for methods */
+        code_size += 4096;  /* ~4KB per map for methods (hash maps need more) */
     }
 
     char *code = malloc(code_size);
@@ -262,6 +294,129 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog) {
                 arr->max_entries, arr->value_size,
                 arr->value_size, arr->value_size, i,
                 i);
+            p += written;
+            remaining -= written;
+        } else if (storage->type == MBPF_MAP_TYPE_HASH) {
+            mbpf_hash_map_t *hash = &storage->u.hash;
+
+            /* Create bucket storage: each bucket is [valid:1][key:key_size][value:value_size]
+             * We allocate max_entries buckets and use open addressing with linear probing. */
+            size_t bucket_size = 1 + hash->key_size + hash->value_size;
+            size_t total_bytes = (size_t)hash->max_entries * bucket_size;
+
+            written = snprintf(p, remaining,
+                "_mapData[%u]=new Uint8Array(%zu);"
+                "_mapValid[%u]={count:0};",  /* Use object to track entry count */
+                i, total_bytes, i);
+            p += written;
+            remaining -= written;
+
+            /* Create hash map object with lookup, update, and delete methods.
+             * We implement a simple hash function using FNV-1a and linear probing. */
+            written = snprintf(p, remaining,
+                "maps['%s']=(function(){"
+                "var d=_mapData[%u];"
+                "var m=_mapValid[%u];"
+                "var maxE=%u;"
+                "var kS=%u;"
+                "var vS=%u;"
+                "var bS=%u;"  /* bucket_size = 1 + key_size + value_size */
+                /* FNV-1a hash function for Uint8Array keys */
+                "function fnv(k){"
+                    "var h=2166136261>>>0;"
+                    "for(var i=0;i<kS;i++){"
+                        "h^=k[i];"
+                        "h=Math.imul(h,16777619)>>>0;"
+                    "}"
+                    "return h;"
+                "}"
+                /* Compare two keys */
+                "function keq(off,k){"
+                    "for(var i=0;i<kS;i++){"
+                        "if(d[off+1+i]!==k[i])return false;"
+                    "}"
+                    "return true;"
+                "}"
+                "return{"
+                /* lookup(keyBuffer, outBuffer) - returns true if found, copies value to outBuffer */
+                "lookup:function(keyBuf,outBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
+                    "if(outBuf.length<vS)throw new RangeError('outBuffer too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0)return false;"  /* Empty slot - not found */
+                        "if(d[off]===1&&keq(off,keyBuf)){"  /* Valid entry with matching key */
+                            "for(var j=0;j<vS;j++)outBuf[j]=d[off+1+kS+j];"
+                            "return true;"
+                        "}"
+                        /* d[off]===2 means deleted, keep probing */
+                    "}"
+                    "return false;"
+                "},"
+                /* update(keyBuffer, valueBuffer) - inserts or updates, returns true on success */
+                "update:function(keyBuf,valueBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "if(!(valueBuf instanceof Uint8Array))throw new TypeError('value must be Uint8Array');"
+                    "if(valueBuf.length<vS)throw new RangeError('value too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "var firstDel=-1;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0){"  /* Empty slot - insert here or at first deleted */
+                            "if(firstDel>=0)off=firstDel;"
+                            "d[off]=1;"  /* Mark valid */
+                            "for(var j=0;j<kS;j++)d[off+1+j]=keyBuf[j];"
+                            "for(var j=0;j<vS;j++)d[off+1+kS+j]=valueBuf[j];"
+                            "m.count++;"
+                            "return true;"
+                        "}"
+                        "if(d[off]===2&&firstDel<0)firstDel=off;"  /* Remember first deleted slot */
+                        "if(d[off]===1&&keq(off,keyBuf)){"  /* Existing key - update value */
+                            "for(var j=0;j<vS;j++)d[off+1+kS+j]=valueBuf[j];"
+                            "return true;"
+                        "}"
+                    "}"
+                    /* Table full, try using firstDel if available */
+                    "if(firstDel>=0){"
+                        "d[firstDel]=1;"
+                        "for(var j=0;j<kS;j++)d[firstDel+1+j]=keyBuf[j];"
+                        "for(var j=0;j<vS;j++)d[firstDel+1+kS+j]=valueBuf[j];"
+                        "m.count++;"
+                        "return true;"
+                    "}"
+                    "return false;"  /* Table full */
+                "},"
+                /* delete(keyBuffer) - removes entry, returns true if found */
+                "delete:function(keyBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0)return false;"  /* Empty slot - not found */
+                        "if(d[off]===1&&keq(off,keyBuf)){"  /* Found it */
+                            "d[off]=2;"  /* Mark as deleted (tombstone) */
+                            "m.count--;"
+                            "return true;"
+                        "}"
+                    "}"
+                    "return false;"
+                "}"
+                "};"
+                "})();",
+                storage->name,
+                i, i,
+                hash->max_entries,
+                hash->key_size,
+                hash->value_size,
+                (uint32_t)bucket_size);
             p += written;
             remaining -= written;
         }
@@ -1814,15 +1969,6 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_OK;
     }
 
-    /* Look up entry function (mbpf_prog or custom entry_symbol from manifest) */
-    JSValue prog_func = JS_GetPropertyStr(ctx, global, prog->manifest.entry_symbol);
-    if (JS_IsUndefined(prog_func) || !JS_IsFunction(ctx, prog_func)) {
-        prog->stats.exceptions++;
-        *out_rc = exception_default;
-        __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
-        return MBPF_OK;
-    }
-
     /* Check stack space: we need 3 slots (arg + function + this) */
     if (JS_StackCheck(ctx, 3)) {
         prog->stats.exceptions++;
@@ -1831,8 +1977,22 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_OK;
     }
 
-    /* Create context object from ctx_blob based on hook type */
+    /* Create context object from ctx_blob based on hook type.
+     * This must be done BEFORE looking up the entry function because
+     * create_hook_ctx may allocate objects and trigger GC, which could
+     * relocate the function. */
     JSValue ctx_arg = create_hook_ctx(ctx, hook, ctx_blob, ctx_len);
+
+    /* Look up entry function AFTER create_hook_ctx to avoid GC invalidation.
+     * MQuickJS has a compacting GC, so any allocations between lookup and
+     * use could move the function object. */
+    JSValue prog_func = JS_GetPropertyStr(ctx, global, prog->manifest.entry_symbol);
+    if (JS_IsUndefined(prog_func) || !JS_IsFunction(ctx, prog_func)) {
+        prog->stats.exceptions++;
+        *out_rc = exception_default;
+        __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
+        return MBPF_OK;
+    }
 
     /* Push in order: argument(s), function, this */
     JS_PushArg(ctx, ctx_arg);      /* ctx argument */
