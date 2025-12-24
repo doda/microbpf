@@ -240,7 +240,7 @@
       "Test with read_fn instead of data pointer",
       "Verify MBPF_CTX_F_TRUNCATED flag is accessible"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "hook-tracepoint",

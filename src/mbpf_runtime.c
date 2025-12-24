@@ -545,7 +545,7 @@ static JSValue create_net_rx_ctx(JSContext *ctx, const void *ctx_blob, size_t ct
     uint8_t *owned_data = NULL;
 
     /* If no contiguous data but a read_fn is provided, snapshot via read_fn. */
-    if ((!data || data_len == 0) && net_ctx->read_fn && data_len > 0) {
+    if (!data && net_ctx->read_fn && data_len > 0) {
         owned_data = malloc(data_len);
         if (!owned_data) {
             return JS_NULL;
@@ -599,11 +599,13 @@ static JSValue create_net_rx_ctx(JSContext *ctx, const void *ctx_blob, size_t ct
         "Object.defineProperty(o,'ifindex',{get:function(){return %u;},set:function(){}});"
         "Object.defineProperty(o,'pkt_len',{get:function(){return %u;},set:function(){}});"
         "Object.defineProperty(o,'data_len',{get:function(){return %u;},set:function(){}});"
-        "Object.defineProperty(o,'l2_proto',{get:function(){return %u;},set:function(){}});",
+        "Object.defineProperty(o,'l2_proto',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'flags',{get:function(){return %u;},set:function(){}});",
         net_ctx->ifindex,
         net_ctx->pkt_len,
         net_ctx->data_len,
-        (uint32_t)net_ctx->l2_proto);
+        (uint32_t)net_ctx->l2_proto,
+        (uint32_t)net_ctx->flags);
     p += written;
     remaining -= written;
 

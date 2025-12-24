@@ -230,6 +230,16 @@ if [ -f build/test_context_read_methods ]; then
     fi
 fi
 
+# Run NET_RX v1 context tests
+if [ -f build/test_context_net_rx_v1 ]; then
+    ./build/test_context_net_rx_v1
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: NET_RX v1 context tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
