@@ -200,6 +200,16 @@ if [ -f build/test_attach_validation ]; then
     fi
 fi
 
+# Run runtime run basic tests
+if [ -f build/test_run_basic ]; then
+    ./build/test_run_basic
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Runtime run basic tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

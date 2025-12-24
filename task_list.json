@@ -198,7 +198,7 @@
       "Verify out_rc contains the return value (0)",
       "Verify program's mbpf_prog function was called"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "runtime-context-object",
