@@ -23,7 +23,7 @@
       "Verify parser rejects files with invalid magic",
       "Verify parser handles different format versions appropriately"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "package-format-section-table",

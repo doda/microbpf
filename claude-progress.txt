@@ -28,3 +28,4 @@ NOT YET IMPLEMENTED. First working agent should start with "project-setup" task.
 4. Signing: Ed25519 verification and policy engine
 5. Observability: counters, debug symbols, event output
 - 2024-12-24: Project setup complete with MQuickJS integration and build scaffolding.
+- 2025-12-24: Package header parsing implemented (magic/version/header size/section count) and tests/tools added.

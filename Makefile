@@ -25,14 +25,22 @@ MBPF_OBJS = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(MBPF_SRCS))
 # Include paths
 CFLAGS += -I$(INC_DIR) $(MQUICKJS_CFLAGS)
 
+# Tool sources
+TOOLS_DIR = tools
+
 # Targets
 LIB = $(BUILD_DIR)/libmbpf.a
 TEST_BIN = $(BUILD_DIR)/test_basic
+TEST_PKG_HEADER = $(BUILD_DIR)/test_package_header
+TEST_PARSE_FILE = $(BUILD_DIR)/test_parse_file
+CREATE_MBPF = $(BUILD_DIR)/create_mbpf
 MQJS = $(MQUICKJS_DIR)/mqjs
 
-.PHONY: all clean test mquickjs
+.PHONY: all clean test mquickjs tools
 
-all: $(LIB) $(TEST_BIN) $(MQJS)
+all: $(LIB) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_PARSE_FILE) $(CREATE_MBPF) $(MQJS)
+
+tools: $(CREATE_MBPF)
 
 # Create build directory
 $(BUILD_DIR):
@@ -65,13 +73,24 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 $(LIB): $(MBPF_OBJS) | $(BUILD_DIR)
 	$(AR) rcs $@ $^
 
-# Test binary
+# Test binaries
 $(BUILD_DIR)/test_basic: $(TEST_DIR)/test_basic.c $(LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
+$(BUILD_DIR)/test_package_header: $(TEST_DIR)/test_package_header.c $(LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
+
+$(BUILD_DIR)/test_parse_file: $(TEST_DIR)/test_parse_file.c $(LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
+
+# Tool binaries
+$(BUILD_DIR)/create_mbpf: $(TOOLS_DIR)/create_mbpf.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $<
+
 # Run tests
-test: $(TEST_BIN)
+test: $(TEST_BIN) $(TEST_PKG_HEADER)
 	./$(TEST_BIN)
+	./$(TEST_PKG_HEADER)
 
 # Verify MQuickJS compiler works
 test-mqjs: $(MQJS)

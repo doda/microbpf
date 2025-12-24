@@ -53,12 +53,26 @@ int mbpf_package_parse_header(const void *data, size_t len,
     const uint8_t *buf = data;
 
     /* Read header fields (little-endian) */
-    out_header->magic = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
-    out_header->format_version = buf[4] | (buf[5] << 8);
-    out_header->header_size = buf[6] | (buf[7] << 8);
-    out_header->flags = buf[8] | (buf[9] << 8) | (buf[10] << 16) | (buf[11] << 24);
-    out_header->section_count = buf[12] | (buf[13] << 8) | (buf[14] << 16) | (buf[15] << 24);
-    out_header->file_crc32 = buf[16] | (buf[17] << 8) | (buf[18] << 16) | (buf[19] << 24);
+    out_header->magic = (uint32_t)buf[0] |
+                        ((uint32_t)buf[1] << 8) |
+                        ((uint32_t)buf[2] << 16) |
+                        ((uint32_t)buf[3] << 24);
+    out_header->format_version = (uint16_t)buf[4] |
+                                 ((uint16_t)buf[5] << 8);
+    out_header->header_size = (uint16_t)buf[6] |
+                              ((uint16_t)buf[7] << 8);
+    out_header->flags = (uint32_t)buf[8] |
+                        ((uint32_t)buf[9] << 8) |
+                        ((uint32_t)buf[10] << 16) |
+                        ((uint32_t)buf[11] << 24);
+    out_header->section_count = (uint32_t)buf[12] |
+                                ((uint32_t)buf[13] << 8) |
+                                ((uint32_t)buf[14] << 16) |
+                                ((uint32_t)buf[15] << 24);
+    out_header->file_crc32 = (uint32_t)buf[16] |
+                             ((uint32_t)buf[17] << 8) |
+                             ((uint32_t)buf[18] << 16) |
+                             ((uint32_t)buf[19] << 24);
 
     /* Validate magic */
     if (out_header->magic != MBPF_MAGIC) {
@@ -101,9 +115,18 @@ int mbpf_package_get_section(const void *data, size_t len,
     for (uint32_t i = 0; i < header.section_count; i++) {
         const uint8_t *sec = section_table + i * sizeof(mbpf_section_desc_t);
 
-        uint32_t sec_type = sec[0] | (sec[1] << 8) | (sec[2] << 16) | (sec[3] << 24);
-        uint32_t sec_offset = sec[4] | (sec[5] << 8) | (sec[6] << 16) | (sec[7] << 24);
-        uint32_t sec_length = sec[8] | (sec[9] << 8) | (sec[10] << 16) | (sec[11] << 24);
+        uint32_t sec_type = (uint32_t)sec[0] |
+                            ((uint32_t)sec[1] << 8) |
+                            ((uint32_t)sec[2] << 16) |
+                            ((uint32_t)sec[3] << 24);
+        uint32_t sec_offset = (uint32_t)sec[4] |
+                              ((uint32_t)sec[5] << 8) |
+                              ((uint32_t)sec[6] << 16) |
+                              ((uint32_t)sec[7] << 24);
+        uint32_t sec_length = (uint32_t)sec[8] |
+                              ((uint32_t)sec[9] << 8) |
+                              ((uint32_t)sec[10] << 16) |
+                              ((uint32_t)sec[11] << 24);
 
         if (sec_type == type) {
             /* Validate bounds */

@@ -76,8 +76,18 @@ echo "Running tests..."
 ./build/test_basic
 TEST_RESULT=$?
 if [ $TEST_RESULT -ne 0 ]; then
-    echo "ERROR: Tests failed"
+    echo "ERROR: Basic tests failed"
     exit 1
+fi
+
+# Run package header tests
+if [ -f build/test_package_header ]; then
+    ./build/test_package_header
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Package header tests failed"
+        exit 1
+    fi
 fi
 
 # Test MQuickJS bytecode compilation
