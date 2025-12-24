@@ -364,7 +364,7 @@
       "Run program returning negative integer - verify out_rc matches",
       "Run program returning non-integer - verify conversion to int32"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "exception-handling",
