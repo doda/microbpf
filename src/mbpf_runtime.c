@@ -523,15 +523,90 @@ static mbpf_instance_t *select_instance(mbpf_program_t *prog) {
 }
 
 /*
+ * Create a NET_RX context object from ctx_blob.
+ * Returns JS object with read-only ifindex, pkt_len, data_len, l2_proto properties.
+ *
+ * Properties are implemented as getter+empty setter pairs via Object.defineProperty,
+ * so writes are silently ignored without throwing exceptions.
+ *
+ * The entire object is created in a single JS_Eval call to avoid reference
+ * management issues with temporary globals.
+ */
+static JSValue create_net_rx_ctx(JSContext *ctx, const void *ctx_blob, size_t ctx_len) {
+    if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_net_rx_v1_t)) {
+        return JS_NULL;
+    }
+
+    const mbpf_ctx_net_rx_v1_t *net_ctx = (const mbpf_ctx_net_rx_v1_t *)ctx_blob;
+
+    /* Build JS code to create a new object with read-only properties.
+     * Using getter+empty setter ensures writes are silently ignored.
+     * The IIFE returns the fully-constructed object. */
+    char code[1024];
+    snprintf(code, sizeof(code),
+        "(function(){"
+        "var o={};"
+        "Object.defineProperty(o,'ifindex',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'pkt_len',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'data_len',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'l2_proto',{get:function(){return %u;},set:function(){}});"
+        "return o;"
+        "})()",
+        net_ctx->ifindex,
+        net_ctx->pkt_len,
+        net_ctx->data_len,
+        (uint32_t)net_ctx->l2_proto);
+
+    JSValue result = JS_Eval(ctx, code, strlen(code), "<ctx>", JS_EVAL_RETVAL);
+    if (JS_IsException(result)) {
+        /* Clear exception to prevent it from propagating */
+        JSValue ex = JS_GetException(ctx);
+        (void)ex;  /* Discard the exception value */
+        return JS_NULL;
+    }
+
+    return result;
+}
+
+/*
+ * Create a context object from ctx_blob based on the hook type.
+ * Returns a JS object with hook-specific properties.
+ */
+static JSValue create_hook_ctx(JSContext *ctx, mbpf_hook_id_t hook,
+                                const void *ctx_blob, size_t ctx_len) {
+    switch ((mbpf_hook_type_t)hook) {
+        case MBPF_HOOK_NET_RX:
+        case MBPF_HOOK_NET_TX:
+            return create_net_rx_ctx(ctx, ctx_blob, ctx_len);
+
+        case MBPF_HOOK_TRACEPOINT:
+        case MBPF_HOOK_TIMER:
+        case MBPF_HOOK_SECURITY:
+        case MBPF_HOOK_CUSTOM:
+        default:
+            /* For hooks without context structure, pass null */
+            if (!ctx_blob || ctx_len == 0) {
+                return JS_NULL;
+            }
+            /* Create a minimal object with just the blob length */
+            {
+                JSValue obj = JS_NewObject(ctx);
+                if (!JS_IsException(obj)) {
+                    JS_SetPropertyStr(ctx, obj, "length", JS_NewUint32(ctx, (uint32_t)ctx_len));
+                }
+                return obj;
+            }
+    }
+}
+
+/*
  * Execute a program on a specific instance.
  * Returns MBPF_OK on success, error code on failure.
  */
 static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
+                           mbpf_hook_id_t hook,
                            const void *ctx_blob, size_t ctx_len,
                            int32_t *out_rc) {
-    (void)ctx_blob;
-    (void)ctx_len;
-
     if (!inst || !inst->js_initialized || !inst->js_ctx) {
         return MBPF_ERR_INVALID_ARG;
     }
@@ -573,10 +648,11 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_OK;
     }
 
-    /* Push in order: argument(s), function, this
-     * TODO: Create proper ctx object from ctx_blob based on hook type.
-     * For now, we pass null as the context. */
-    JS_PushArg(ctx, JS_NULL);      /* ctx argument */
+    /* Create context object from ctx_blob based on hook type */
+    JSValue ctx_arg = create_hook_ctx(ctx, hook, ctx_blob, ctx_len);
+
+    /* Push in order: argument(s), function, this */
+    JS_PushArg(ctx, ctx_arg);      /* ctx argument */
     JS_PushArg(ctx, prog_func);    /* function */
     JS_PushArg(ctx, JS_NULL);      /* this */
 
@@ -630,7 +706,7 @@ int mbpf_run(mbpf_runtime_t *rt, mbpf_hook_id_t hook,
             }
 
             int32_t prog_rc = 0;
-            int err = run_on_instance(inst, prog, ctx_blob, ctx_len, &prog_rc);
+            int err = run_on_instance(inst, prog, hook, ctx_blob, ctx_len, &prog_rc);
             if (err == MBPF_OK) {
                 /* For decision hooks, use the most restrictive decision.
                  * For now, the last program's return value wins. */

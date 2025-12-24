@@ -210,6 +210,16 @@ if [ -f build/test_run_basic ]; then
     fi
 fi
 
+# Run context object tests
+if [ -f build/test_context_object ]; then
+    ./build/test_context_object
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Context object tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

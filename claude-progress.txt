@@ -42,3 +42,4 @@ NOT YET IMPLEMENTED. First working agent should start with "project-setup" task.
 - 2025-12-24: Validated attach hook type and context ABI version checks with new attach validation tests.
 instance-creation: reviewed and fixed per-CPU instance selection guard
 - 2025-12-24: Reviewed runtime-run-basic; mbpf_run executes attached programs with new run tests.
+- 2025-12-24: Completed runtime context object support with NET_RX field exposure and tests.

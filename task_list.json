@@ -210,7 +210,7 @@
       "Verify program receives correct scalar values",
       "Verify ctx properties are read-only (writes are rejected or ignored)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "context-read-methods",
