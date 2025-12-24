@@ -316,7 +316,7 @@
       "Attach and invoke with custom context",
       "Verify custom context fields accessible"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "entry-point-mbpf-prog",

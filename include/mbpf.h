@@ -203,6 +203,45 @@ typedef struct mbpf_ctx_security_v1 {
     mbpf_read_bytes_fn read_fn; /* Optional scatter-gather reader */
 } mbpf_ctx_security_v1_t;
 
+/* CUSTOM context (v1) - for platform-defined hooks with versioned schema */
+typedef struct mbpf_ctx_custom_v1 {
+    uint32_t abi_version;       /* = 1 */
+    uint32_t custom_hook_id;    /* Platform-defined hook identifier */
+    uint32_t schema_version;    /* Platform-defined schema version for this hook */
+    uint16_t flags;             /* Context flags */
+    uint16_t reserved;          /* Padding for alignment */
+    uint32_t field_count;       /* Number of custom fields in the schema */
+    uint32_t data_len;          /* Length of custom context data */
+    const uint8_t *data;        /* Custom context-specific data */
+    mbpf_read_bytes_fn read_fn; /* Optional scatter-gather reader */
+
+    /* Platform-provided field descriptors for dynamic field access.
+     * Each field is described by name (null-terminated), offset, and type.
+     * This allows JS code to access fields by name or index. */
+    const struct mbpf_custom_field *fields;  /* Array of field_count descriptors */
+} mbpf_ctx_custom_v1_t;
+
+/* Custom field type enumeration for MBPF_HOOK_CUSTOM */
+typedef enum {
+    MBPF_FIELD_U8     = 1,
+    MBPF_FIELD_U16    = 2,
+    MBPF_FIELD_U32    = 3,
+    MBPF_FIELD_U64    = 4,
+    MBPF_FIELD_I8     = 5,
+    MBPF_FIELD_I16    = 6,
+    MBPF_FIELD_I32    = 7,
+    MBPF_FIELD_I64    = 8,
+    MBPF_FIELD_BYTES  = 9,   /* raw byte array */
+} mbpf_field_type_t;
+
+/* Custom field descriptor for MBPF_HOOK_CUSTOM */
+typedef struct mbpf_custom_field {
+    const char *name;           /* Field name (null-terminated) */
+    uint32_t offset;            /* Byte offset in data buffer */
+    uint32_t length;            /* Length in bytes (for BYTES type) */
+    mbpf_field_type_t type;     /* Field type */
+} mbpf_custom_field_t;
+
 /* Core API */
 mbpf_runtime_t *mbpf_runtime_init(const mbpf_runtime_config_t *cfg);
 void mbpf_runtime_shutdown(mbpf_runtime_t *rt);
