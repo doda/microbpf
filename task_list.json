@@ -391,7 +391,7 @@
       "Call maps.myarray.lookup(0, outBuffer) - verify returns true with correct data",
       "Verify index bounds checking (reject negative, >= max_entries)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-hash-basic",

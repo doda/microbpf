@@ -17,6 +17,29 @@
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
 extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
 
+/*
+ * Runtime array map storage.
+ * For array maps, values are stored in a flat array.
+ * A bitmap tracks which entries have been set.
+ */
+typedef struct mbpf_array_map {
+    uint32_t max_entries;       /* Maximum number of entries */
+    uint32_t value_size;        /* Size of each value in bytes */
+    uint8_t *values;            /* Flat array: max_entries * value_size bytes */
+    uint8_t *valid;             /* Bitmap: (max_entries + 7) / 8 bytes */
+} mbpf_array_map_t;
+
+/*
+ * Generic map storage container.
+ */
+typedef struct mbpf_map_storage {
+    char name[32];              /* Map name from manifest */
+    uint32_t type;              /* Map type (MBPF_MAP_TYPE_*) */
+    union {
+        mbpf_array_map_t array;
+    } u;
+} mbpf_map_storage_t;
+
 /* Per-CPU or per-thread execution instance */
 struct mbpf_instance {
     void *js_heap;              /* Heap memory for JS context */
@@ -55,6 +78,10 @@ struct mbpf_program {
     /* Instance array */
     mbpf_instance_t *instances;
     uint32_t instance_count;
+
+    /* Map storage - shared across all instances */
+    mbpf_map_storage_t *maps;
+    uint32_t map_count;
 };
 
 /* Default log handler */
@@ -67,6 +94,195 @@ static void default_log_fn(int level, const char *msg) {
         case 3: level_str = "ERROR"; break;
     }
     fprintf(stderr, "[mbpf %s] %s\n", level_str, msg);
+}
+
+/*
+ * Create map storage from manifest definitions.
+ * Returns 0 on success, -1 on error.
+ */
+static int create_maps_from_manifest(mbpf_program_t *prog) {
+    if (!prog->manifest.maps || prog->manifest.map_count == 0) {
+        prog->maps = NULL;
+        prog->map_count = 0;
+        return 0;
+    }
+
+    prog->map_count = prog->manifest.map_count;
+    prog->maps = calloc(prog->map_count, sizeof(mbpf_map_storage_t));
+    if (!prog->maps) {
+        prog->map_count = 0;
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_def_t *def = &prog->manifest.maps[i];
+        mbpf_map_storage_t *storage = &prog->maps[i];
+
+        strncpy(storage->name, def->name, sizeof(storage->name) - 1);
+        storage->name[sizeof(storage->name) - 1] = '\0';
+        storage->type = def->type;
+
+        if (def->type == MBPF_MAP_TYPE_ARRAY) {
+            mbpf_array_map_t *arr = &storage->u.array;
+            arr->max_entries = def->max_entries;
+            arr->value_size = def->value_size;
+
+            /* Allocate value storage */
+            size_t values_size = (size_t)arr->max_entries * arr->value_size;
+            arr->values = calloc(values_size, 1);
+            if (!arr->values) {
+                goto cleanup;
+            }
+
+            /* Allocate validity bitmap: one bit per entry */
+            size_t bitmap_size = (arr->max_entries + 7) / 8;
+            arr->valid = calloc(bitmap_size, 1);
+            if (!arr->valid) {
+                free(arr->values);
+                arr->values = NULL;
+                goto cleanup;
+            }
+        }
+        /* TODO: Add hash map and other types here */
+    }
+
+    return 0;
+
+cleanup:
+    /* Free any partially allocated maps */
+    for (uint32_t j = 0; j < prog->map_count; j++) {
+        mbpf_map_storage_t *storage = &prog->maps[j];
+        if (storage->type == MBPF_MAP_TYPE_ARRAY) {
+            free(storage->u.array.values);
+            free(storage->u.array.valid);
+        }
+    }
+    free(prog->maps);
+    prog->maps = NULL;
+    prog->map_count = 0;
+    return -1;
+}
+
+/*
+ * Free map storage.
+ */
+static void free_maps(mbpf_program_t *prog) {
+    if (!prog->maps) return;
+
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+        if (storage->type == MBPF_MAP_TYPE_ARRAY) {
+            free(storage->u.array.values);
+            free(storage->u.array.valid);
+        }
+    }
+    free(prog->maps);
+    prog->maps = NULL;
+    prog->map_count = 0;
+}
+
+/*
+ * Create the 'maps' global object for a JS context.
+ * Each map is exposed as a property with lookup/update methods.
+ */
+static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog) {
+    if (!prog->maps || prog->map_count == 0) {
+        return 0;  /* No maps to set up */
+    }
+
+    /* Build JS code to create maps object.
+     * We generate JS code that creates the maps object with closures
+     * that reference internal data arrays by index. */
+
+    /* First, estimate buffer size needed */
+    size_t code_size = 2048;  /* Base size for boilerplate */
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        code_size += 2048;  /* ~2KB per map for methods */
+    }
+
+    char *code = malloc(code_size);
+    if (!code) return -1;
+
+    char *p = code;
+    size_t remaining = code_size;
+    int written;
+
+    /* Start the setup IIFE */
+    written = snprintf(p, remaining,
+        "(function(){"
+        "var maps={};"
+        "var _mapData=[];"  /* Will hold arrays for each map */
+        "var _mapValid=[];");  /* Will hold validity arrays */
+    p += written;
+    remaining -= written;
+
+    /* For each map, add an entry in _mapData and methods */
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+
+        if (storage->type == MBPF_MAP_TYPE_ARRAY) {
+            mbpf_array_map_t *arr = &storage->u.array;
+
+            /* Create data array - initially all zeros */
+            size_t total_bytes = (size_t)arr->max_entries * arr->value_size;
+            written = snprintf(p, remaining,
+                "_mapData[%u]=new Uint8Array(%zu);"
+                "_mapValid[%u]=new Uint8Array(%u);",
+                i, total_bytes, i, arr->max_entries);
+            p += written;
+            remaining -= written;
+
+            /* Create map object with lookup and update methods */
+            written = snprintf(p, remaining,
+                "maps['%s']={"
+                "lookup:function(idx,outBuf){"
+                    "if(typeof idx!=='number')throw new TypeError('index must be a number');"
+                    "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
+                    "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
+                    "if(outBuf.length<%u)throw new RangeError('outBuffer too small');"
+                    "if(!_mapValid[%u][idx])return false;"
+                    "var off=idx*%u;"
+                    "for(var i=0;i<%u;i++)outBuf[i]=_mapData[%u][off+i];"
+                    "return true;"
+                "},"
+                "update:function(idx,valueBuf){"
+                    "if(typeof idx!=='number')throw new TypeError('index must be a number');"
+                    "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
+                    "if(!(valueBuf instanceof Uint8Array))throw new TypeError('valueBuffer must be Uint8Array');"
+                    "if(valueBuf.length<%u)throw new RangeError('valueBuffer too small');"
+                    "var off=idx*%u;"
+                    "for(var i=0;i<%u;i++)_mapData[%u][off+i]=valueBuf[i];"
+                    "_mapValid[%u][idx]=1;"
+                    "return true;"
+                "}"
+                "};",
+                storage->name,
+                arr->max_entries, arr->value_size,
+                i, arr->value_size, arr->value_size, i,
+                arr->max_entries, arr->value_size,
+                arr->value_size, arr->value_size, i,
+                i);
+            p += written;
+            remaining -= written;
+        }
+    }
+
+    /* Set global maps object and close IIFE */
+    written = snprintf(p, remaining,
+        "globalThis.maps=maps;"
+        "})()");
+    p += written;
+
+    /* Evaluate the code to set up maps */
+    JSValue result = JS_Eval(ctx, code, strlen(code), "<maps>", JS_EVAL_RETVAL);
+    free(code);
+
+    if (JS_IsException(result)) {
+        JS_GetException(ctx);
+        return -1;
+    }
+
+    return 0;
 }
 
 /*
@@ -366,12 +582,20 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         return MBPF_ERR_HEAP_TOO_SMALL;
     }
 
+    /* Create map storage from manifest definitions */
+    if (create_maps_from_manifest(prog) != 0) {
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_NO_MEM;
+    }
+
     /* Get bytecode section */
     const void *bytecode_data;
     size_t bytecode_len;
     err = mbpf_package_get_section(pkg, pkg_len, MBPF_SEC_BYTECODE,
                                    &bytecode_data, &bytecode_len);
     if (err != MBPF_OK) {
+        free_maps(prog);
         mbpf_manifest_free(&prog->manifest);
         free(prog);
         return MBPF_ERR_MISSING_SECTION;
@@ -380,6 +604,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     /* Store bytecode for reference (used by each instance) */
     prog->bytecode = malloc(bytecode_len);
     if (!prog->bytecode) {
+        free_maps(prog);
         mbpf_manifest_free(&prog->manifest);
         free(prog);
         return MBPF_ERR_NO_MEM;
@@ -398,6 +623,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     prog->instances = calloc(prog->instance_count, sizeof(mbpf_instance_t));
     if (!prog->instances) {
         free(prog->bytecode);
+        free_maps(prog);
         mbpf_manifest_free(&prog->manifest);
         free(prog);
         return MBPF_ERR_NO_MEM;
@@ -413,6 +639,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
             }
             free(prog->instances);
             free(prog->bytecode);
+            free_maps(prog);
             mbpf_manifest_free(&prog->manifest);
             free(prog);
             return err;
@@ -422,9 +649,24 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     /* Store bc_info from bytecode for reference */
     mbpf_bytecode_check(prog->bytecode, prog->bytecode_len, &prog->bc_info);
 
+    /* Set up maps object in each instance's JS context */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        if (setup_maps_object(prog->instances[i].js_ctx, prog) != 0) {
+            for (uint32_t j = 0; j < prog->instance_count; j++) {
+                free_instance(&prog->instances[j]);
+            }
+            free(prog->instances);
+            free(prog->bytecode);
+            free_maps(prog);
+            mbpf_manifest_free(&prog->manifest);
+            free(prog);
+            return MBPF_ERR_NO_MEM;
+        }
+    }
+
     /* Call mbpf_init() on all instances if defined.
-     * This happens after maps are created (when map subsystem is implemented)
-     * but before the program is available for running. */
+     * This happens after maps are created but before the program is available
+     * for running. */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
         err = call_mbpf_init_on_instance(&prog->instances[i]);
         if (err != MBPF_OK) {
@@ -434,6 +676,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
             }
             free(prog->instances);
             free(prog->bytecode);
+            free_maps(prog);
             mbpf_manifest_free(&prog->manifest);
             free(prog);
             return err;
@@ -535,12 +778,8 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
         prog->instances = NULL;
     }
 
-    /* TODO: Clean up associated maps when map subsystem is implemented.
-     * Map cleanup policy:
-     * - Shared maps (referenced by other programs) should not be freed
-     * - Program-private maps should be freed
-     * - Maps with MBPF_MAP_F_PERSIST flag may need special handling
-     */
+    /* Clean up map storage */
+    free_maps(prog);
 
     mbpf_manifest_free(&prog->manifest);
     if (prog->bytecode) {

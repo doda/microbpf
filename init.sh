@@ -310,6 +310,16 @@ if [ -f build/test_exception_handling ]; then
     fi
 fi
 
+# Run array map tests
+if [ -f build/test_array_map ]; then
+    ./build/test_array_map
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Array map tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
