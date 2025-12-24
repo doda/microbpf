@@ -58,3 +58,4 @@ return-value-semantics: verified 32-bit signed return value handling
 exception-handling: reviewed exception defaults and tests
 - Completed map-array-basic review: array map lookup/update and tests added.
 - Completed map-hash-basic review: added hash map lookup/update/delete and tests.
+- Completed map-hash-collision review: collision/tombstone/high-load hash map tests added.

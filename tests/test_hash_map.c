@@ -807,7 +807,420 @@ TEST(data_persists_across_runs) {
 }
 
 /*
- * Test 14: Re-insert after delete (tombstone handling)
+ * Test 14: Hash collision handling - multiple keys hashing to same bucket
+ *
+ * Verification: Keys that collide are handled correctly with linear probing.
+ * We create keys that have distinct values but force them into similar
+ * hash ranges by having a small max_entries (8). This increases collision probability.
+ */
+TEST(collision_handling) {
+    /* Use a small map to increase collision probability */
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    /* Insert 6 entries into a map with 8 slots - high collision chance */\n"
+        "    var entries = [\n"
+        "        { key: new Uint8Array([0x00, 0x00, 0x00, 0x00]), val: 0x11 },\n"
+        "        { key: new Uint8Array([0x01, 0x00, 0x00, 0x00]), val: 0x22 },\n"
+        "        { key: new Uint8Array([0x02, 0x00, 0x00, 0x00]), val: 0x33 },\n"
+        "        { key: new Uint8Array([0x03, 0x00, 0x00, 0x00]), val: 0x44 },\n"
+        "        { key: new Uint8Array([0x08, 0x00, 0x00, 0x00]), val: 0x55 },\n"  /* likely collides */
+        "        { key: new Uint8Array([0x10, 0x00, 0x00, 0x00]), val: 0x66 }\n"  /* likely collides */
+        "    ];\n"
+        "    \n"
+        "    /* Insert all entries */\n"
+        "    for (var i = 0; i < entries.length; i++) {\n"
+        "        var valBuf = new Uint8Array(8);\n"
+        "        valBuf[0] = entries[i].val;\n"
+        "        if (!maps.myhash.update(entries[i].key, valBuf)) {\n"
+        "            return -(i + 1);  /* Insert failed */\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    /* Verify all entries are retrievable with correct values */\n"
+        "    var outBuf = new Uint8Array(8);\n"
+        "    for (var i = 0; i < entries.length; i++) {\n"
+        "        if (!maps.myhash.lookup(entries[i].key, outBuf)) {\n"
+        "            return -(10 + i);  /* Lookup failed */\n"
+        "        }\n"
+        "        if (outBuf[0] !== entries[i].val) {\n"
+        "            return -(20 + i);  /* Value mismatch */\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    return 0;  /* All entries inserted and retrieved correctly */\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    /* Use small max_entries (8) to force collisions */
+    size_t pkg_len = build_mbpf_package_with_hash_map(pkg, sizeof(pkg),
+                                                       bytecode, bc_len,
+                                                       MBPF_HOOK_TRACEPOINT,
+                                                       "myhash", 4, 8, 8);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    mbpf_program_t *prog = NULL;
+    mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+
+    mbpf_ctx_tracepoint_v1_t ctx = { .abi_version = 1 };
+    int32_t out_rc = -999;
+    int err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, &ctx, sizeof(ctx), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
+ * Test 15: Delete collided entries and verify correct ones removed
+ *
+ * Verification: When keys collide, deleting one doesn't affect others.
+ */
+TEST(collision_delete_correct_entry) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    /* Insert 4 entries into 8-slot map */\n"
+        "    var key1 = new Uint8Array([0x00, 0x00, 0x00, 0x00]);\n"
+        "    var key2 = new Uint8Array([0x08, 0x00, 0x00, 0x00]);  /* likely collides with key1 */\n"
+        "    var key3 = new Uint8Array([0x10, 0x00, 0x00, 0x00]);  /* likely collides with key1 */\n"
+        "    var key4 = new Uint8Array([0x18, 0x00, 0x00, 0x00]);  /* likely collides with key1 */\n"
+        "    \n"
+        "    var val1 = new Uint8Array([0x11, 0, 0, 0, 0, 0, 0, 0]);\n"
+        "    var val2 = new Uint8Array([0x22, 0, 0, 0, 0, 0, 0, 0]);\n"
+        "    var val3 = new Uint8Array([0x33, 0, 0, 0, 0, 0, 0, 0]);\n"
+        "    var val4 = new Uint8Array([0x44, 0, 0, 0, 0, 0, 0, 0]);\n"
+        "    \n"
+        "    /* Insert all */\n"
+        "    maps.myhash.update(key1, val1);\n"
+        "    maps.myhash.update(key2, val2);\n"
+        "    maps.myhash.update(key3, val3);\n"
+        "    maps.myhash.update(key4, val4);\n"
+        "    \n"
+        "    /* Delete the middle entry (key2) */\n"
+        "    if (!maps.myhash.delete(key2)) return -1;\n"
+        "    \n"
+        "    /* Verify key2 is gone */\n"
+        "    var outBuf = new Uint8Array(8);\n"
+        "    if (maps.myhash.lookup(key2, outBuf)) return -2;  /* Should not be found */\n"
+        "    \n"
+        "    /* Verify other keys still accessible with correct values */\n"
+        "    if (!maps.myhash.lookup(key1, outBuf)) return -3;\n"
+        "    if (outBuf[0] !== 0x11) return -4;\n"
+        "    \n"
+        "    if (!maps.myhash.lookup(key3, outBuf)) return -5;\n"
+        "    if (outBuf[0] !== 0x33) return -6;\n"
+        "    \n"
+        "    if (!maps.myhash.lookup(key4, outBuf)) return -7;\n"
+        "    if (outBuf[0] !== 0x44) return -8;\n"
+        "    \n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    size_t pkg_len = build_mbpf_package_with_hash_map(pkg, sizeof(pkg),
+                                                       bytecode, bc_len,
+                                                       MBPF_HOOK_TRACEPOINT,
+                                                       "myhash", 4, 8, 8);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    mbpf_program_t *prog = NULL;
+    mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+
+    mbpf_ctx_tracepoint_v1_t ctx = { .abi_version = 1 };
+    int32_t out_rc = -999;
+    int err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, &ctx, sizeof(ctx), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
+ * Test 16: Lookup finds correct entry when probe chain has tombstones
+ *
+ * Verification: After delete, lookup still finds entries past tombstones.
+ */
+TEST(collision_lookup_past_tombstone) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    /* Create keys that likely collide */\n"
+        "    var keys = [];\n"
+        "    var vals = [];\n"
+        "    for (var i = 0; i < 5; i++) {\n"
+        "        keys[i] = new Uint8Array([i * 8, 0, 0, 0]);\n"
+        "        vals[i] = new Uint8Array([0x10 + i, 0, 0, 0, 0, 0, 0, 0]);\n"
+        "    }\n"
+        "    \n"
+        "    /* Insert all */\n"
+        "    for (var i = 0; i < 5; i++) {\n"
+        "        maps.myhash.update(keys[i], vals[i]);\n"
+        "    }\n"
+        "    \n"
+        "    /* Delete keys[1] and keys[2] (middle of chain) */\n"
+        "    maps.myhash.delete(keys[1]);\n"
+        "    maps.myhash.delete(keys[2]);\n"
+        "    \n"
+        "    /* Verify keys[3] and keys[4] are still findable past tombstones */\n"
+        "    var outBuf = new Uint8Array(8);\n"
+        "    if (!maps.myhash.lookup(keys[3], outBuf)) return -1;\n"
+        "    if (outBuf[0] !== 0x13) return -2;\n"
+        "    \n"
+        "    if (!maps.myhash.lookup(keys[4], outBuf)) return -3;\n"
+        "    if (outBuf[0] !== 0x14) return -4;\n"
+        "    \n"
+        "    /* Also verify keys[0] is still there */\n"
+        "    if (!maps.myhash.lookup(keys[0], outBuf)) return -5;\n"
+        "    if (outBuf[0] !== 0x10) return -6;\n"
+        "    \n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    size_t pkg_len = build_mbpf_package_with_hash_map(pkg, sizeof(pkg),
+                                                       bytecode, bc_len,
+                                                       MBPF_HOOK_TRACEPOINT,
+                                                       "myhash", 4, 8, 8);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    mbpf_program_t *prog = NULL;
+    mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+
+    mbpf_ctx_tracepoint_v1_t ctx = { .abi_version = 1 };
+    int32_t out_rc = -999;
+    int err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, &ctx, sizeof(ctx), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
+ * Test 17: High load - fill map to near capacity and verify integrity
+ *
+ * Verification: Map works correctly when nearly full.
+ */
+TEST(high_load_no_corruption) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    /* Fill map with 90 entries (max_entries=100) */\n"
+        "    var insertCount = 90;\n"
+        "    var deleteCount = 30;\n"
+        "    \n"
+        "    /* Insert entries */\n"
+        "    for (var i = 0; i < insertCount; i++) {\n"
+        "        var key = new Uint8Array([\n"
+        "            i & 0xFF, (i >> 8) & 0xFF, 0, 0, 0, 0, 0, 0\n"
+        "        ]);\n"
+        "        var val = new Uint8Array([\n"
+        "            (i * 3) & 0xFF, ((i * 3) >> 8) & 0xFF, 0, 0, 0, 0, 0, 0,\n"
+        "            0, 0, 0, 0, 0, 0, 0, 0\n"
+        "        ]);\n"
+        "        if (!maps.myhash.update(key, val)) {\n"
+        "            return -(1000 + i);  /* Insert failed */\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    /* Verify all entries */\n"
+        "    var outBuf = new Uint8Array(16);\n"
+        "    for (var i = 0; i < insertCount; i++) {\n"
+        "        var key = new Uint8Array([\n"
+        "            i & 0xFF, (i >> 8) & 0xFF, 0, 0, 0, 0, 0, 0\n"
+        "        ]);\n"
+        "        if (!maps.myhash.lookup(key, outBuf)) {\n"
+        "            return -(2000 + i);  /* Lookup failed */\n"
+        "        }\n"
+        "        var expected = (i * 3) & 0xFF;\n"
+        "        if (outBuf[0] !== expected) {\n"
+        "            return -(3000 + i);  /* Value mismatch */\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    /* Delete some entries (indices 10-39) */\n"
+        "    for (var i = 10; i < 10 + deleteCount; i++) {\n"
+        "        var key = new Uint8Array([\n"
+        "            i & 0xFF, (i >> 8) & 0xFF, 0, 0, 0, 0, 0, 0\n"
+        "        ]);\n"
+        "        if (!maps.myhash.delete(key)) {\n"
+        "            return -(4000 + i);  /* Delete failed */\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    /* Verify deleted entries are gone */\n"
+        "    for (var i = 10; i < 10 + deleteCount; i++) {\n"
+        "        var key = new Uint8Array([\n"
+        "            i & 0xFF, (i >> 8) & 0xFF, 0, 0, 0, 0, 0, 0\n"
+        "        ]);\n"
+        "        if (maps.myhash.lookup(key, outBuf)) {\n"
+        "            return -(5000 + i);  /* Should be deleted */\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    /* Verify non-deleted entries are still correct */\n"
+        "    for (var i = 0; i < 10; i++) {\n"
+        "        var key = new Uint8Array([\n"
+        "            i & 0xFF, (i >> 8) & 0xFF, 0, 0, 0, 0, 0, 0\n"
+        "        ]);\n"
+        "        if (!maps.myhash.lookup(key, outBuf)) {\n"
+        "            return -(6000 + i);\n"
+        "        }\n"
+        "        var expected = (i * 3) & 0xFF;\n"
+        "        if (outBuf[0] !== expected) {\n"
+        "            return -(7000 + i);\n"
+        "        }\n"
+        "    }\n"
+        "    for (var i = 40; i < insertCount; i++) {\n"
+        "        var key = new Uint8Array([\n"
+        "            i & 0xFF, (i >> 8) & 0xFF, 0, 0, 0, 0, 0, 0\n"
+        "        ]);\n"
+        "        if (!maps.myhash.lookup(key, outBuf)) {\n"
+        "            return -(8000 + i);\n"
+        "        }\n"
+        "        var expected = (i * 3) & 0xFF;\n"
+        "        if (outBuf[0] !== expected) {\n"
+        "            return -(9000 + i);\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    size_t pkg_len = build_mbpf_package_with_hash_map(pkg, sizeof(pkg),
+                                                       bytecode, bc_len,
+                                                       MBPF_HOOK_TRACEPOINT,
+                                                       "myhash", 8, 16, 100);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    mbpf_program_t *prog = NULL;
+    mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+
+    mbpf_ctx_tracepoint_v1_t ctx = { .abi_version = 1 };
+    int32_t out_rc = -999;
+    int err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, &ctx, sizeof(ctx), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
+ * Test 18: Insert after delete reuses tombstone slot
+ *
+ * Verification: Inserting a new key after deletions can use tombstone slots.
+ */
+TEST(insert_reuses_tombstone) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    /* Fill map with 6 entries */\n"
+        "    for (var i = 0; i < 6; i++) {\n"
+        "        var key = new Uint8Array([i, 0, 0, 0]);\n"
+        "        var val = new Uint8Array([0x10 + i, 0, 0, 0, 0, 0, 0, 0]);\n"
+        "        maps.myhash.update(key, val);\n"
+        "    }\n"
+        "    \n"
+        "    /* Delete entries 2, 3, 4 */\n"
+        "    for (var i = 2; i < 5; i++) {\n"
+        "        var key = new Uint8Array([i, 0, 0, 0]);\n"
+        "        maps.myhash.delete(key);\n"
+        "    }\n"
+        "    \n"
+        "    /* Insert new entries 10, 11, 12 - should reuse tombstones */\n"
+        "    for (var i = 10; i < 13; i++) {\n"
+        "        var key = new Uint8Array([i, 0, 0, 0]);\n"
+        "        var val = new Uint8Array([0xA0 + i, 0, 0, 0, 0, 0, 0, 0]);\n"
+        "        if (!maps.myhash.update(key, val)) {\n"
+        "            return -(i + 100);  /* Insert failed */\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    /* Verify new entries */\n"
+        "    var outBuf = new Uint8Array(8);\n"
+        "    for (var i = 10; i < 13; i++) {\n"
+        "        var key = new Uint8Array([i, 0, 0, 0]);\n"
+        "        if (!maps.myhash.lookup(key, outBuf)) {\n"
+        "            return -(i + 200);\n"
+        "        }\n"
+        "        if (outBuf[0] !== 0xA0 + i) {\n"
+        "            return -(i + 300);\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    /* Verify original remaining entries (0, 1, 5) */\n"
+        "    var remaining = [0, 1, 5];\n"
+        "    for (var j = 0; j < remaining.length; j++) {\n"
+        "        var i = remaining[j];\n"
+        "        var key = new Uint8Array([i, 0, 0, 0]);\n"
+        "        if (!maps.myhash.lookup(key, outBuf)) {\n"
+        "            return -(i + 400);\n"
+        "        }\n"
+        "        if (outBuf[0] !== 0x10 + i) {\n"
+        "            return -(i + 500);\n"
+        "        }\n"
+        "    }\n"
+        "    \n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    size_t pkg_len = build_mbpf_package_with_hash_map(pkg, sizeof(pkg),
+                                                       bytecode, bc_len,
+                                                       MBPF_HOOK_TRACEPOINT,
+                                                       "myhash", 4, 8, 8);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    mbpf_program_t *prog = NULL;
+    mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+
+    mbpf_ctx_tracepoint_v1_t ctx = { .abi_version = 1 };
+    int32_t out_rc = -999;
+    int err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, &ctx, sizeof(ctx), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
+ * Test 19: Re-insert after delete (tombstone handling)
  *
  * Verification: Can re-insert a key after it has been deleted
  */
@@ -886,6 +1299,15 @@ int main(void) {
     RUN_TEST(lookup_returns_false_after_delete);
     RUN_TEST(delete_nonexistent_returns_false);
     RUN_TEST(reinsert_after_delete);
+
+    printf("\nCollision handling tests:\n");
+    RUN_TEST(collision_handling);
+    RUN_TEST(collision_delete_correct_entry);
+    RUN_TEST(collision_lookup_past_tombstone);
+    RUN_TEST(insert_reuses_tombstone);
+
+    printf("\nHigh load tests:\n");
+    RUN_TEST(high_load_no_corruption);
 
     printf("\nMultiple entries test:\n");
     RUN_TEST(multiple_entries);

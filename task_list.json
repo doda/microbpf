@@ -418,7 +418,7 @@
       "Delete entries and verify correct ones removed",
       "Verify map doesn't corrupt on high load"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-max-entries",
