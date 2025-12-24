@@ -38,3 +38,4 @@ NOT YET IMPLEMENTED. First working agent should start with "project-setup" task.
 - 2025-12-24: Verified mbpf_program_load basic behavior with new program load tests.
 - 2025-12-24: Completed program load validation checks (heap minimum enforcement) with comprehensive tests.
 - 2025-12-24: Implemented mbpf_program_unload with mbpf_fini handling and added program unload tests.
+- 2025-12-24: Implemented program attach/detach hook binding with runtime execution tests.

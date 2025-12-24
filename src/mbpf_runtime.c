@@ -245,7 +245,7 @@ static void call_mbpf_fini(mbpf_program_t *prog) {
         return;
     }
 
-    /* Call mbpf_fini with no arguments */
+    /* Call mbpf_fini with no arguments (order: function, this) */
     JS_PushArg(ctx, fini_func);   /* function */
     JS_PushArg(ctx, JS_NULL);     /* this */
     JSValue result = JS_Call(ctx, 0);
@@ -324,6 +324,14 @@ int mbpf_program_attach(mbpf_runtime_t *rt, mbpf_program_t *prog,
         return MBPF_ERR_INVALID_ARG;
     }
 
+    if (prog->runtime != rt) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    if (hook != (mbpf_hook_id_t)prog->manifest.hook_type) {
+        return MBPF_ERR_HOOK_MISMATCH;
+    }
+
     if (prog->attached) {
         return MBPF_ERR_ALREADY_ATTACHED;
     }
@@ -341,6 +349,10 @@ int mbpf_program_detach(mbpf_runtime_t *rt, mbpf_program_t *prog,
         return MBPF_ERR_INVALID_ARG;
     }
 
+    if (prog->runtime != rt) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
     if (!prog->attached || prog->attached_hook != hook) {
         return MBPF_ERR_NOT_ATTACHED;
     }
@@ -348,6 +360,78 @@ int mbpf_program_detach(mbpf_runtime_t *rt, mbpf_program_t *prog,
     prog->attached = false;
     prog->attached_hook = 0;
 
+    return MBPF_OK;
+}
+
+/*
+ * Execute a single attached program.
+ * Returns MBPF_OK on success, error code on failure.
+ */
+static int run_program(mbpf_program_t *prog, const void *ctx_blob, size_t ctx_len,
+                       int32_t *out_rc) {
+    (void)ctx_blob;
+    (void)ctx_len;
+
+    if (!prog->js_initialized || !prog->js_ctx) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    JSContext *ctx = prog->js_ctx;
+
+    /* Get global object */
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsUndefined(global) || JS_IsException(global)) {
+        prog->stats.exceptions++;
+        *out_rc = MBPF_NET_PASS;  /* Default safe value */
+        return MBPF_OK;
+    }
+
+    /* Look up mbpf_prog function */
+    JSValue prog_func = JS_GetPropertyStr(ctx, global, "mbpf_prog");
+    if (JS_IsUndefined(prog_func) || !JS_IsFunction(ctx, prog_func)) {
+        prog->stats.exceptions++;
+        *out_rc = MBPF_NET_PASS;
+        return MBPF_OK;
+    }
+
+    /* Check stack space: we need 3 slots (arg + function + this) */
+    if (JS_StackCheck(ctx, 3)) {
+        prog->stats.exceptions++;
+        *out_rc = MBPF_NET_PASS;
+        return MBPF_OK;
+    }
+
+    /* Push in order: argument(s), function, this
+     * TODO: Create proper ctx object from ctx_blob based on hook type.
+     * For now, we pass null as the context. */
+    JS_PushArg(ctx, JS_NULL);      /* ctx argument */
+    JS_PushArg(ctx, prog_func);    /* function */
+    JS_PushArg(ctx, JS_NULL);      /* this */
+
+    prog->stats.invocations++;
+
+    JSValue result = JS_Call(ctx, 1);  /* 1 argument */
+
+    if (JS_IsException(result)) {
+        prog->stats.exceptions++;
+        JS_GetException(ctx);  /* Clear the exception */
+        *out_rc = MBPF_NET_PASS;
+        return MBPF_OK;
+    }
+
+    /* Convert result to int32 */
+    if (JS_IsNumber(ctx, result)) {
+        int res = 0;
+        if (JS_ToInt32(ctx, &res, result) == 0) {
+            *out_rc = (int32_t)res;
+        } else {
+            *out_rc = 0;
+        }
+    } else {
+        *out_rc = 0;  /* Default if not a number */
+    }
+
+    prog->stats.successes++;
     return MBPF_OK;
 }
 
@@ -359,10 +443,22 @@ int mbpf_run(mbpf_runtime_t *rt, mbpf_hook_id_t hook,
         return MBPF_ERR_INVALID_ARG;
     }
 
-    /* Find attached programs for this hook */
-    /* TODO: Implement actual JS execution with MQuickJS */
-    /* For now, return success with default pass */
-    *out_rc = MBPF_NET_PASS;
+    *out_rc = MBPF_NET_PASS;  /* Default safe value */
+    int programs_run = 0;
+
+    /* Find and execute all attached programs for this hook */
+    for (mbpf_program_t *prog = rt->programs; prog; prog = prog->next) {
+        if (!prog->unloaded && prog->attached && prog->attached_hook == hook) {
+            int32_t prog_rc = 0;
+            int err = run_program(prog, ctx_blob, ctx_len, &prog_rc);
+            if (err == MBPF_OK) {
+                /* For decision hooks, use the most restrictive decision.
+                 * For now, the last program's return value wins. */
+                *out_rc = prog_rc;
+                programs_run++;
+            }
+        }
+    }
 
     return MBPF_OK;
 }

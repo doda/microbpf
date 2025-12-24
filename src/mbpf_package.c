@@ -1461,17 +1461,26 @@ int mbpf_bytecode_load(JSContext *ctx,
         return MBPF_ERR_INVALID_BYTECODE;
     }
 
-    /* Step 4: Load bytecode and get main_func */
-    JSValue main_func = JS_LoadBytecode(ctx, bytecode);
+    /* Step 4: Load bytecode and get module */
+    JSValue module_val = JS_LoadBytecode(ctx, bytecode);
 
-    if (JS_IsException(main_func)) {
+    if (JS_IsException(module_val)) {
         if (out_info) *out_info = info;
         return MBPF_ERR_INVALID_BYTECODE;
     }
 
-    /* Return the main_func as a JSValue */
+    /* Step 5: Run the module to define global functions (mbpf_prog, etc.) */
+    JSValue run_result = JS_Run(ctx, module_val);
+
+    if (JS_IsException(run_result)) {
+        JS_GetException(ctx);  /* Clear exception */
+        if (out_info) *out_info = info;
+        return MBPF_ERR_INVALID_BYTECODE;
+    }
+
+    /* Return the run result (typically undefined for module-level code) */
     if (out_main_func) {
-        *(JSValue *)out_main_func = main_func;
+        *(JSValue *)out_main_func = run_result;
     }
 
     if (out_info) *out_info = info;

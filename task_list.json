@@ -162,7 +162,7 @@
       "Verify detach returns success",
       "Verify program no longer runs when hook fires after detach"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "program-attach-validation",
