@@ -1270,7 +1270,32 @@ void mbpf_manifest_free(mbpf_manifest_t *manifest) {
     manifest->helper_version_count = 0;
 }
 
-/* Validate CRCs */
+/*
+ * Compute CRC32 over file data, skipping the file_crc32 field (bytes 16-19).
+ * This allows the CRC to be computed over the entire file except the CRC field itself.
+ */
+static uint32_t mbpf_file_crc32(const void *data, size_t len) {
+    crc32_init_table();
+
+    const uint8_t *buf = data;
+    uint32_t crc = 0xFFFFFFFF;
+
+    /* Process bytes before file_crc32 field (bytes 0-15) */
+    for (size_t i = 0; i < 16 && i < len; i++) {
+        crc = crc32_table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+    }
+
+    /* Skip the file_crc32 field (bytes 16-19) */
+
+    /* Process bytes after file_crc32 field (bytes 20 onwards) */
+    for (size_t i = 20; i < len; i++) {
+        crc = crc32_table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+    }
+
+    return crc ^ 0xFFFFFFFF;
+}
+
+/* Validate file-level CRC */
 int mbpf_package_validate_crc(const void *data, size_t len) {
     mbpf_file_header_t header;
     int err = mbpf_package_parse_header(data, len, &header);
@@ -1278,24 +1303,41 @@ int mbpf_package_validate_crc(const void *data, size_t len) {
         return err;
     }
 
-    /* Validate file CRC if present */
+    /* Validate file CRC if present (non-zero) */
     if (header.file_crc32 != 0) {
-        /* CRC is calculated over the entire file except the file_crc32 field */
-        uint32_t computed = mbpf_crc32(data, 16); /* Header before crc */
-        const uint8_t *rest = (const uint8_t *)data + 20;
-        size_t rest_len = len - 20;
-
-        /* Continue CRC over rest of file */
-        crc32_init_table();
-        uint32_t crc = computed ^ 0xFFFFFFFF;
-        for (size_t i = 0; i < rest_len; i++) {
-            crc = crc32_table[(crc ^ rest[i]) & 0xFF] ^ (crc >> 8);
-        }
-        computed = crc ^ 0xFFFFFFFF;
-
+        uint32_t computed = mbpf_file_crc32(data, len);
         if (computed != header.file_crc32) {
-            return MBPF_ERR_INVALID_PACKAGE;
+            return MBPF_ERR_CRC_MISMATCH;
         }
+    }
+
+    return MBPF_OK;
+}
+
+/* Validate per-section CRC */
+int mbpf_package_validate_section_crc(const void *data, size_t len,
+                                       const mbpf_section_desc_t *section) {
+    if (!data || !section) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Skip validation if CRC is zero (not present) */
+    if (section->crc32 == 0) {
+        return MBPF_OK;
+    }
+
+    /* Validate section bounds */
+    uint64_t end = (uint64_t)section->offset + section->length;
+    if (end > len) {
+        return MBPF_ERR_SECTION_BOUNDS;
+    }
+
+    /* Compute CRC over section data */
+    const uint8_t *section_data = (const uint8_t *)data + section->offset;
+    uint32_t computed = mbpf_crc32(section_data, section->length);
+
+    if (computed != section->crc32) {
+        return MBPF_ERR_CRC_MISMATCH;
     }
 
     return MBPF_OK;

@@ -121,6 +121,8 @@ void mbpf_manifest_free(mbpf_manifest_t *manifest);
 /* CRC32 validation */
 uint32_t mbpf_crc32(const void *data, size_t len);
 int mbpf_package_validate_crc(const void *data, size_t len);
+int mbpf_package_validate_section_crc(const void *data, size_t len,
+                                       const mbpf_section_desc_t *section);
 
 /* Bytecode loading API */
 

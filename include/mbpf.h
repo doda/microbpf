@@ -74,6 +74,7 @@ typedef enum {
     MBPF_ERR_SIGNATURE          = -14,
     MBPF_ERR_SECTION_BOUNDS     = -15,
     MBPF_ERR_SECTION_OVERLAP    = -16,
+    MBPF_ERR_CRC_MISMATCH       = -17,
 } mbpf_error_t;
 
 /* Capabilities */

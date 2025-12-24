@@ -80,7 +80,7 @@
       "Verify loader validates per-section crc32 when non-zero",
       "Verify loader rejects files with invalid CRCs"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "package-format-signing",

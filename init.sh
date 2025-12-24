@@ -110,6 +110,26 @@ if [ -f build/test_manifest ]; then
     fi
 fi
 
+# Run bytecode tests
+if [ -f build/test_bytecode ]; then
+    ./build/test_bytecode
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Bytecode tests failed"
+        exit 1
+    fi
+fi
+
+# Run CRC validation tests
+if [ -f build/test_crc ]; then
+    ./build/test_crc
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: CRC validation tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
