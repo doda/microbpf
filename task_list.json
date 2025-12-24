@@ -1,0 +1,1218 @@
+[
+  {
+    "id": "project-setup",
+    "category": "infrastructure",
+    "description": "Set up the project with MQuickJS integration, C build system, and basic structure",
+    "steps": [
+      "Run init.sh successfully",
+      "Verify MQuickJS is cloned and built (mqjs compiler available)",
+      "Verify C compiler and build tools are installed",
+      "Confirm project structure includes src/, include/, tools/, tests/, examples/ directories",
+      "Verify a basic Makefile or CMake build system compiles successfully"
+    ],
+    "passes": false
+  },
+  {
+    "id": "package-format-header",
+    "category": "functional",
+    "description": "Implement .mbpf file header parsing with magic number, version, and section table",
+    "steps": [
+      "Create a .mbpf file with valid header (magic 0x4D425046, format_version=1)",
+      "Verify parser correctly identifies magic bytes",
+      "Verify parser reads header_size, flags, section_count, file_crc32",
+      "Verify parser rejects files with invalid magic",
+      "Verify parser handles different format versions appropriately"
+    ],
+    "passes": false
+  },
+  {
+    "id": "package-format-section-table",
+    "category": "functional",
+    "description": "Implement section descriptor parsing for .mbpf files",
+    "steps": [
+      "Create .mbpf with multiple sections (MANIFEST, BYTECODE, MAPS, DEBUG, SIG)",
+      "Verify parser reads section type, offset, length, crc32 for each section",
+      "Verify parser validates section bounds don't exceed file size",
+      "Verify parser detects overlapping sections and rejects them",
+      "Verify unknown section types are skipped gracefully"
+    ],
+    "passes": false
+  },
+  {
+    "id": "package-format-manifest",
+    "category": "functional",
+    "description": "Implement manifest section parsing (CBOR preferred, JSON allowed)",
+    "steps": [
+      "Create .mbpf with CBOR-encoded manifest containing all required fields",
+      "Verify parser extracts program_name, program_version, hook_type",
+      "Verify parser extracts hook_ctx_abi_version, entry_symbol",
+      "Verify parser extracts mquickjs_bytecode_version and target (word_size, endianness)",
+      "Verify parser extracts mbpf_api_version, heap_size",
+      "Verify parser extracts budgets (max_steps, max_helpers, optional max_wall_time_us)",
+      "Verify parser extracts capabilities array",
+      "Verify parser extracts optional helper_versions map",
+      "Verify parser extracts maps array definitions",
+      "Verify parser rejects manifest missing required fields"
+    ],
+    "passes": false
+  },
+  {
+    "id": "package-format-bytecode-section",
+    "category": "functional",
+    "description": "Implement bytecode section handling with relocation",
+    "steps": [
+      "Create .mbpf with valid MQuickJS bytecode section",
+      "Verify loader copies bytecode into writable buffer",
+      "Verify loader calls JS_RelocateBytecode on the copy",
+      "Verify loader calls JS_LoadBytecode and obtains main_func",
+      "Verify loader rejects bytecode that fails JS_IsBytecode check",
+      "Verify loader rejects bytecode with mismatched JS_BYTECODE_VERSION"
+    ],
+    "passes": false
+  },
+  {
+    "id": "package-format-crc-validation",
+    "category": "functional",
+    "description": "Implement CRC32 validation for file header and sections",
+    "steps": [
+      "Create .mbpf with valid CRC32 in header and sections",
+      "Verify loader validates file_crc32 when non-zero",
+      "Verify loader validates per-section crc32 when non-zero",
+      "Verify loader rejects files with invalid CRCs"
+    ],
+    "passes": false
+  },
+  {
+    "id": "package-format-signing",
+    "category": "security",
+    "description": "Implement Ed25519 signature verification for .mbpf packages",
+    "steps": [
+      "Create .mbpf with MBPF_SEC_SIG section containing Ed25519 signature",
+      "Verify loader validates signature over bytes up to signature section",
+      "Verify loader accepts valid signatures with provisioned public key",
+      "Verify loader rejects packages with invalid signatures",
+      "Verify unsigned packages are rejected in production mode",
+      "Verify unsigned packages are allowed in development mode when configured"
+    ],
+    "passes": false
+  },
+  {
+    "id": "runtime-init-shutdown",
+    "category": "functional",
+    "description": "Implement mbpf_runtime_init and mbpf_runtime_shutdown APIs",
+    "steps": [
+      "Call mbpf_runtime_init with valid config",
+      "Verify runtime object is created and not NULL",
+      "Call mbpf_runtime_shutdown on initialized runtime",
+      "Verify no memory leaks on shutdown (valgrind or equivalent)",
+      "Verify multiple init/shutdown cycles work correctly"
+    ],
+    "passes": false
+  },
+  {
+    "id": "program-load-basic",
+    "category": "functional",
+    "description": "Implement mbpf_program_load for loading valid .mbpf packages",
+    "steps": [
+      "Create valid .mbpf package with simple program",
+      "Call mbpf_program_load with package bytes",
+      "Verify program is loaded successfully (return code 0)",
+      "Verify out_prog pointer is set to valid mbpf_program_t",
+      "Verify program can be retrieved/identified after loading"
+    ],
+    "passes": false
+  },
+  {
+    "id": "program-load-validation",
+    "category": "functional",
+    "description": "Implement comprehensive validation during program load",
+    "steps": [
+      "Attempt to load .mbpf with invalid header - verify rejection",
+      "Attempt to load .mbpf with unsupported format version - verify rejection",
+      "Attempt to load .mbpf with missing MANIFEST section - verify rejection",
+      "Attempt to load .mbpf with missing BYTECODE section - verify rejection",
+      "Attempt to load .mbpf with heap_size below platform minimum - verify rejection",
+      "Attempt to load .mbpf with incompatible bytecode version - verify rejection"
+    ],
+    "passes": false
+  },
+  {
+    "id": "program-unload",
+    "category": "functional",
+    "description": "Implement mbpf_program_unload for clean program removal",
+    "steps": [
+      "Load a program successfully",
+      "Call mbpf_program_unload",
+      "Verify program resources are freed",
+      "Verify associated maps are cleaned up (if policy allows)",
+      "Verify mbpf_fini is called if defined in program",
+      "Verify double-unload is handled gracefully"
+    ],
+    "passes": false
+  },
+  {
+    "id": "program-attach-detach",
+    "category": "functional",
+    "description": "Implement mbpf_program_attach and mbpf_program_detach for hook binding",
+    "steps": [
+      "Load a program targeting MBPF_HOOK_TRACEPOINT",
+      "Call mbpf_program_attach with matching hook",
+      "Verify attach returns success",
+      "Call mbpf_program_detach",
+      "Verify detach returns success",
+      "Verify program no longer runs when hook fires after detach"
+    ],
+    "passes": false
+  },
+  {
+    "id": "program-attach-validation",
+    "category": "functional",
+    "description": "Validate hook type and context ABI version during attach",
+    "steps": [
+      "Attempt to attach program to mismatched hook type - verify rejection",
+      "Attempt to attach program with incompatible hook_ctx_abi_version - verify rejection",
+      "Attempt to attach same program twice to same hook - verify appropriate behavior",
+      "Attach multiple programs to same hook - verify all execute"
+    ],
+    "passes": false
+  },
+  {
+    "id": "instance-creation",
+    "category": "functional",
+    "description": "Implement per-CPU or per-thread mbpf_instance_t creation",
+    "steps": [
+      "Load a program",
+      "Verify instances are created (per-CPU or single based on config)",
+      "Verify each instance has its own JSContext with configured heap_size",
+      "Verify instances are isolated from each other"
+    ],
+    "passes": false
+  },
+  {
+    "id": "runtime-run-basic",
+    "category": "functional",
+    "description": "Implement mbpf_run to execute programs on hook invocation",
+    "steps": [
+      "Load and attach a simple program that returns 0",
+      "Call mbpf_run with appropriate hook and context",
+      "Verify out_rc contains the return value (0)",
+      "Verify program's mbpf_prog function was called"
+    ],
+    "passes": false
+  },
+  {
+    "id": "runtime-context-object",
+    "category": "functional",
+    "description": "Implement ctx host object passed to mbpf_prog",
+    "steps": [
+      "Create NET_RX context with known values",
+      "Run program that reads ctx.ifindex, ctx.pkt_len, ctx.data_len, ctx.l2_proto",
+      "Verify program receives correct scalar values",
+      "Verify ctx properties are read-only (writes are rejected or ignored)"
+    ],
+    "passes": false
+  },
+  {
+    "id": "context-read-methods",
+    "category": "functional",
+    "description": "Implement ctx.readU8, ctx.readU16LE, ctx.readU32LE, ctx.readBytes",
+    "steps": [
+      "Create NET_RX context with known packet data",
+      "Run program calling ctx.readU8(0) - verify correct byte returned",
+      "Run program calling ctx.readU16LE(0) - verify correct little-endian 16-bit value",
+      "Run program calling ctx.readU32LE(0) - verify correct little-endian 32-bit value",
+      "Run program calling ctx.readBytes(0, 10, outBuffer) - verify bytes copied",
+      "Verify readBytes returns number of bytes copied",
+      "Verify out-of-bounds reads throw exceptions",
+      "Verify type errors thrown for invalid arguments"
+    ],
+    "passes": false
+  },
+  {
+    "id": "context-net-rx-v1",
+    "category": "functional",
+    "description": "Implement MBPF_HOOK_NET_RX v1 context structure and binding",
+    "steps": [
+      "Create mbpf_ctx_net_rx_v1 structure with abi_version=1",
+      "Populate ifindex, pkt_len, data_len, l2_proto, flags, data pointer",
+      "Run program and verify all fields accessible via ctx object",
+      "Verify ctx.read* methods work with data pointer",
+      "Test with read_fn instead of data pointer",
+      "Verify MBPF_CTX_F_TRUNCATED flag is accessible"
+    ],
+    "passes": false
+  },
+  {
+    "id": "hook-tracepoint",
+    "category": "functional",
+    "description": "Implement MBPF_HOOK_TRACEPOINT hook type",
+    "steps": [
+      "Load program targeting MBPF_HOOK_TRACEPOINT",
+      "Attach to tracepoint hook",
+      "Trigger hook with appropriate context",
+      "Verify program executes and return value is captured",
+      "Verify return 0 indicates success, non-zero is soft failure"
+    ],
+    "passes": false
+  },
+  {
+    "id": "hook-timer",
+    "category": "functional",
+    "description": "Implement MBPF_HOOK_TIMER hook type for periodic execution",
+    "steps": [
+      "Load program targeting MBPF_HOOK_TIMER",
+      "Attach with timer configuration (period, etc.)",
+      "Verify program executes periodically",
+      "Verify timer context provides expected fields",
+      "Detach and verify timer stops"
+    ],
+    "passes": false
+  },
+  {
+    "id": "hook-net-rx",
+    "category": "functional",
+    "description": "Implement MBPF_HOOK_NET_RX decision hook",
+    "steps": [
+      "Load program targeting MBPF_HOOK_NET_RX",
+      "Attach to network receive hook",
+      "Invoke with packet context",
+      "Verify MBPF_NET_PASS (0) allows packet",
+      "Verify MBPF_NET_DROP (1) drops packet",
+      "Verify MBPF_NET_ABORT (2) handled appropriately"
+    ],
+    "passes": false
+  },
+  {
+    "id": "hook-net-tx",
+    "category": "functional",
+    "description": "Implement MBPF_HOOK_NET_TX hook type",
+    "steps": [
+      "Load program targeting MBPF_HOOK_NET_TX",
+      "Attach to network transmit hook",
+      "Invoke with packet context",
+      "Verify return codes affect transmission decision"
+    ],
+    "passes": false
+  },
+  {
+    "id": "hook-security",
+    "category": "functional",
+    "description": "Implement MBPF_HOOK_SECURITY authorization hook",
+    "steps": [
+      "Load program targeting MBPF_HOOK_SECURITY",
+      "Attach to security decision hook",
+      "Invoke with authorization context",
+      "Verify allow/deny return codes are honored"
+    ],
+    "passes": false
+  },
+  {
+    "id": "hook-custom",
+    "category": "functional",
+    "description": "Implement MBPF_HOOK_CUSTOM for platform-defined hooks",
+    "steps": [
+      "Define custom hook with versioned schema",
+      "Load program targeting custom hook",
+      "Attach and invoke with custom context",
+      "Verify custom context fields accessible"
+    ],
+    "passes": false
+  },
+  {
+    "id": "entry-point-mbpf-prog",
+    "category": "functional",
+    "description": "Verify mbpf_prog entry function is required and called",
+    "steps": [
+      "Load program defining mbpf_prog function",
+      "Run program and verify mbpf_prog is invoked with ctx",
+      "Load program without mbpf_prog - verify load fails",
+      "Verify custom entry_symbol from manifest is honored"
+    ],
+    "passes": false
+  },
+  {
+    "id": "entry-point-mbpf-init",
+    "category": "functional",
+    "description": "Implement optional mbpf_init entry point called at load time",
+    "steps": [
+      "Load program defining mbpf_init function",
+      "Verify mbpf_init is called after maps created but before first run",
+      "Load program without mbpf_init - verify load succeeds",
+      "Verify mbpf_init can access maps object"
+    ],
+    "passes": false
+  },
+  {
+    "id": "entry-point-mbpf-fini",
+    "category": "functional",
+    "description": "Implement optional mbpf_fini entry point called at unload",
+    "steps": [
+      "Load program defining mbpf_fini function",
+      "Unload program",
+      "Verify mbpf_fini was called (best-effort)",
+      "Load program without mbpf_fini - verify unload succeeds"
+    ],
+    "passes": false
+  },
+  {
+    "id": "return-value-semantics",
+    "category": "functional",
+    "description": "Verify 32-bit signed integer return value from mbpf_prog",
+    "steps": [
+      "Run program returning 0 - verify out_rc is 0",
+      "Run program returning positive integer - verify out_rc matches",
+      "Run program returning negative integer - verify out_rc matches",
+      "Run program returning non-integer - verify conversion to int32"
+    ],
+    "passes": false
+  },
+  {
+    "id": "exception-handling",
+    "category": "functional",
+    "description": "Handle program exceptions gracefully with policy-defined defaults",
+    "steps": [
+      "Run program that throws an exception",
+      "Verify exception is caught and doesn't crash runtime",
+      "Verify policy-defined default is returned (e.g., PASS for NET_RX)",
+      "Verify exception is counted in per-program stats",
+      "Configure different default for different hook types"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-array-basic",
+    "category": "functional",
+    "description": "Implement array map type with lookup and update operations",
+    "steps": [
+      "Define array map in program manifest with max_entries=10, value_size=4",
+      "Load program and verify map is created",
+      "Call maps.myarray.lookup(0, outBuffer) - verify returns false initially",
+      "Call maps.myarray.update(0, valueBuffer) - verify success",
+      "Call maps.myarray.lookup(0, outBuffer) - verify returns true with correct data",
+      "Verify index bounds checking (reject negative, >= max_entries)"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-hash-basic",
+    "category": "functional",
+    "description": "Implement hash map type with lookup, update, delete operations",
+    "steps": [
+      "Define hash map in manifest with key_size=8, value_size=16, max_entries=100",
+      "Load program and verify map is created",
+      "Call maps.myhash.lookup(keyBuffer, outBuffer) - verify returns false initially",
+      "Call maps.myhash.update(keyBuffer, valueBuffer) - verify success",
+      "Call maps.myhash.lookup(keyBuffer, outBuffer) - verify returns true with data",
+      "Call maps.myhash.delete(keyBuffer) - verify returns true",
+      "Call maps.myhash.lookup(keyBuffer, outBuffer) - verify returns false after delete"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-hash-collision",
+    "category": "functional",
+    "description": "Verify hash map handles collisions correctly",
+    "steps": [
+      "Insert multiple entries that may collide",
+      "Verify all entries are retrievable with correct values",
+      "Delete entries and verify correct ones removed",
+      "Verify map doesn't corrupt on high load"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-max-entries",
+    "category": "functional",
+    "description": "Verify map enforces max_entries limit",
+    "steps": [
+      "Create hash map with max_entries=5",
+      "Insert 5 entries - verify all succeed",
+      "Attempt to insert 6th entry - verify appropriate behavior (reject or LRU)",
+      "Verify existing entries remain intact"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-type-validation",
+    "category": "functional",
+    "description": "Verify map operations validate key and value types/sizes",
+    "steps": [
+      "Attempt lookup with key of wrong size - verify TypeError thrown",
+      "Attempt lookup with non-Uint8Array key (for hash) - verify TypeError",
+      "Attempt update with value of wrong size - verify TypeError",
+      "Attempt array lookup with non-number key - verify TypeError"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-lru-hash",
+    "category": "functional",
+    "description": "Implement optional LRU hash map type",
+    "steps": [
+      "Define LRU hash map in manifest",
+      "Fill map to capacity",
+      "Insert new entry - verify oldest/least-used is evicted",
+      "Access entries to update LRU order",
+      "Verify most recently accessed entries are retained"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-per-cpu",
+    "category": "functional",
+    "description": "Implement per-CPU map variants for array and hash",
+    "steps": [
+      "Define per-CPU array map (PERCPU flag)",
+      "Verify each CPU instance has independent map storage",
+      "Update on CPU0, read on CPU1 - verify isolation",
+      "Aggregate values across CPUs if API supports"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-ring-buffer",
+    "category": "functional",
+    "description": "Implement optional ring buffer map type for event output",
+    "steps": [
+      "Define ring buffer map in manifest",
+      "Write events to ring buffer from program",
+      "Read events from ring buffer (host side)",
+      "Verify overflow behavior (oldest events dropped)"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-counter",
+    "category": "functional",
+    "description": "Implement optimized counter map type with atomic operations",
+    "steps": [
+      "Define counter map in manifest",
+      "Call maps.counter.add(key, delta) - verify atomic increment",
+      "Verify 64-bit counters work correctly",
+      "Verify concurrent updates don't lose counts"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-iteration",
+    "category": "functional",
+    "description": "Implement optional bounded map iteration with nextKey",
+    "steps": [
+      "Define hash map and populate with multiple entries",
+      "Call maps.myhash.nextKey(null, outKey) - verify returns first key",
+      "Call maps.myhash.nextKey(prevKey, outKey) - verify returns next key",
+      "Iterate until nextKey returns false",
+      "Verify all keys are visited",
+      "Verify iteration counts toward max_helpers budget"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-persistence",
+    "category": "functional",
+    "description": "Verify maps persist across program updates (hot swap)",
+    "steps": [
+      "Load program and populate map with data",
+      "Update program to new version",
+      "Verify map data is preserved after update",
+      "Verify maps are destroyed when policy requires"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-concurrency",
+    "category": "functional",
+    "description": "Verify map concurrency guarantees",
+    "steps": [
+      "Perform concurrent reads - verify no corruption",
+      "Perform concurrent updates - verify serialization per map/bucket",
+      "Verify per-CPU maps avoid global contention",
+      "Stress test with high concurrency"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-api-version",
+    "category": "functional",
+    "description": "Implement mbpf.apiVersion property",
+    "steps": [
+      "Access mbpf.apiVersion from program",
+      "Verify value is number encoded as major<<16|minor",
+      "Verify value matches runtime's API version"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-log",
+    "category": "functional",
+    "description": "Implement mbpf.log(level, msg) helper",
+    "steps": [
+      "Call mbpf.log(0, 'test message') from program",
+      "Verify log output appears in debug mode",
+      "Verify log is rate-limited or no-op in production mode",
+      "Test different log levels"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-u64-load-store",
+    "category": "functional",
+    "description": "Implement mbpf.u64LoadLE and mbpf.u64StoreLE helpers",
+    "steps": [
+      "Create Uint8Array with 8 bytes of known data",
+      "Create u64 array [0, 0]",
+      "Call mbpf.u64LoadLE(bytes, 0, out) - verify out contains [lo, hi]",
+      "Modify out values",
+      "Call mbpf.u64StoreLE(bytes, 0, out) - verify bytes updated correctly",
+      "Verify little-endian byte order",
+      "Verify type/bounds errors throw"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-now-ns",
+    "category": "functional",
+    "description": "Implement optional mbpf.nowNs(out) helper",
+    "steps": [
+      "Request CAP_TIME capability",
+      "Call mbpf.nowNs(out) where out is [0, 0]",
+      "Verify out contains monotonic time in nanoseconds as u64",
+      "Call twice and verify second value >= first"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-emit",
+    "category": "functional",
+    "description": "Implement optional mbpf.emit(eventId, bytes) helper",
+    "steps": [
+      "Request CAP_EMIT capability",
+      "Call mbpf.emit(42, eventData)",
+      "Verify event appears in ring buffer or platform event pipe",
+      "Verify eventId and data are correctly captured"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-stats",
+    "category": "functional",
+    "description": "Implement optional mbpf.stats() or mbpf.stat(name) helper",
+    "steps": [
+      "Request CAP_STATS capability",
+      "Call mbpf.stats() - verify returns platform-defined stats object",
+      "Verify invocation counts, error counts, etc. are accessible"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-map-lowlevel",
+    "category": "functional",
+    "description": "Implement optional low-level map helpers as alternative to maps object",
+    "steps": [
+      "Call mbpf.mapLookup(mapId, keyBytes, outValueBytes) - verify works",
+      "Call mbpf.mapUpdate(mapId, keyBytes, valueBytes, flags) - verify works",
+      "Call mbpf.mapDelete(mapId, keyBytes) - verify works"
+    ],
+    "passes": false
+  },
+  {
+    "id": "budget-max-steps",
+    "category": "functional",
+    "description": "Implement max_steps execution budget enforcement",
+    "steps": [
+      "Load program with max_steps=1000",
+      "Run program that loops 100 times - verify completes",
+      "Run program that loops 10000 times - verify aborted",
+      "Verify budget exceeded is counted in stats",
+      "Verify safe default is returned on budget exceeded"
+    ],
+    "passes": false
+  },
+  {
+    "id": "budget-max-helpers",
+    "category": "functional",
+    "description": "Implement max_helpers helper call limit enforcement",
+    "steps": [
+      "Load program with max_helpers=10",
+      "Run program that calls 5 helpers - verify completes",
+      "Run program that calls 20 helpers - verify aborted",
+      "Verify helper count includes all helper types",
+      "Verify safe default returned on limit exceeded"
+    ],
+    "passes": false
+  },
+  {
+    "id": "budget-max-wall-time",
+    "category": "functional",
+    "description": "Implement optional max_wall_time_us budget enforcement",
+    "steps": [
+      "Load program with max_wall_time_us=1000 (1ms)",
+      "Run fast program - verify completes",
+      "Run slow program (busy loop) - verify aborted within time limit",
+      "Verify timing overhead is acceptable"
+    ],
+    "passes": false
+  },
+  {
+    "id": "budget-interrupt-handler",
+    "category": "functional",
+    "description": "Implement budget enforcement via JS_SetInterruptHandler",
+    "steps": [
+      "Verify interrupt handler is registered on context",
+      "Verify handler decrements step counter per VM step",
+      "Verify handler returns non-zero to abort on budget exceeded",
+      "Verify JS_SetContextOpaque stores instance for counter access"
+    ],
+    "passes": false
+  },
+  {
+    "id": "memory-heap-size",
+    "category": "functional",
+    "description": "Enforce per-program heap_size memory limit",
+    "steps": [
+      "Load program with heap_size=16384 (16KB)",
+      "Run program that allocates within limit - verify works",
+      "Run program that tries to allocate beyond limit - verify OOM",
+      "Verify OOM is counted in stats",
+      "Verify safe default returned on OOM"
+    ],
+    "passes": false
+  },
+  {
+    "id": "memory-minimum-heap",
+    "category": "functional",
+    "description": "Reject programs with heap_size below platform minimum",
+    "steps": [
+      "Attempt to load program with heap_size=1024 (too small)",
+      "Verify load fails with appropriate error",
+      "Document platform minimum heap size"
+    ],
+    "passes": false
+  },
+  {
+    "id": "capability-enforcement",
+    "category": "security",
+    "description": "Enforce capability requirements during load and runtime",
+    "steps": [
+      "Load program declaring CAP_LOG - verify succeeds",
+      "Load program declaring CAP_EMIT without platform granting it - verify load fails",
+      "Call helper requiring CAP_TIME without capability - verify throws",
+      "Configure platform allow-list and verify enforcement"
+    ],
+    "passes": false
+  },
+  {
+    "id": "capability-categories",
+    "category": "security",
+    "description": "Implement all defined capability categories",
+    "steps": [
+      "Verify CAP_LOG gates mbpf.log",
+      "Verify CAP_MAP_READ gates map lookup",
+      "Verify CAP_MAP_WRITE gates map update/delete",
+      "Verify CAP_MAP_ITERATE gates nextKey",
+      "Verify CAP_EMIT gates mbpf.emit",
+      "Verify CAP_TIME gates mbpf.nowNs",
+      "Verify CAP_STATS gates mbpf.stats"
+    ],
+    "passes": false
+  },
+  {
+    "id": "nested-execution-prevention",
+    "category": "security",
+    "description": "Prevent nested execution on same instance",
+    "steps": [
+      "Trigger hook while already executing microBPF on same instance",
+      "Verify nested invocation fails with safe default",
+      "Verify nested invocation is counted in stats",
+      "Verify in_use flag is atomically managed"
+    ],
+    "passes": false
+  },
+  {
+    "id": "failure-isolation",
+    "category": "security",
+    "description": "Verify failing programs cannot affect system stability",
+    "steps": [
+      "Run program that throws exceptions repeatedly",
+      "Verify kernel/runtime remains stable",
+      "Verify other programs continue to execute",
+      "Verify shared state (maps) is not corrupted"
+    ],
+    "passes": false
+  },
+  {
+    "id": "circuit-breaker",
+    "category": "security",
+    "description": "Implement optional circuit breaker for repeated failures",
+    "steps": [
+      "Configure circuit breaker threshold (e.g., 10 failures)",
+      "Trigger 10 failures on same program",
+      "Verify program is temporarily disabled",
+      "Verify program re-enables after cooldown period"
+    ],
+    "passes": false
+  },
+  {
+    "id": "api-version-enforcement",
+    "category": "functional",
+    "description": "Enforce helper API version compatibility during load",
+    "steps": [
+      "Load program with mbpf_api_version matching runtime - verify succeeds",
+      "Load program with major version mismatch - verify rejected",
+      "Load program requiring higher minor version than runtime - verify rejected",
+      "Load program with lower minor version - verify succeeds"
+    ],
+    "passes": false
+  },
+  {
+    "id": "per-helper-versioning",
+    "category": "functional",
+    "description": "Implement optional per-helper version enforcement",
+    "steps": [
+      "Load program with helper_versions map in manifest",
+      "Verify each helper version is checked against runtime",
+      "Verify incompatible helper version causes load rejection"
+    ],
+    "passes": false
+  },
+  {
+    "id": "typed-array-shim",
+    "category": "functional",
+    "description": "Implement typed array access shim for Uint8Array handling",
+    "steps": [
+      "Implement is_u8array(val) - verify correctly identifies Uint8Array",
+      "Implement u8array_len(val) - verify returns correct length",
+      "Implement u8array_data(val) - verify returns valid pointer",
+      "Verify pointer is ephemeral (valid only until next allocation)"
+    ],
+    "passes": false
+  },
+  {
+    "id": "allocation-free-helpers",
+    "category": "functional",
+    "description": "Verify all helpers are allocation-free on success path",
+    "steps": [
+      "Audit all helper implementations for JS allocations",
+      "Verify helpers take preallocated buffers as outputs",
+      "Verify helpers return numbers/booleans only",
+      "Verify typed array pointers are safe to use within helper"
+    ],
+    "passes": false
+  },
+  {
+    "id": "gc-reference-handling",
+    "category": "functional",
+    "description": "Implement proper GC reference handling with JSGCRef",
+    "steps": [
+      "Use JS_AddGCRef for persistent references (entry func, maps object)",
+      "Verify references remain valid after GC/compaction",
+      "Verify references are released on cleanup",
+      "Stress test with allocations to trigger GC"
+    ],
+    "passes": false
+  },
+  {
+    "id": "deferred-execution-queue",
+    "category": "functional",
+    "description": "Implement deferred execution queue for observer hooks",
+    "steps": [
+      "Configure tracepoint hook for deferred execution",
+      "Trigger hook - verify invocation is queued",
+      "Verify worker context drains queue and executes program",
+      "Verify queue has fixed maximum depth"
+    ],
+    "passes": false
+  },
+  {
+    "id": "deferred-execution-backpressure",
+    "category": "functional",
+    "description": "Implement backpressure when deferred queue is full",
+    "steps": [
+      "Fill deferred queue to capacity",
+      "Trigger additional hooks",
+      "Verify invocations are dropped (not blocking)",
+      "Verify per-program/per-hook drop counter is incremented"
+    ],
+    "passes": false
+  },
+  {
+    "id": "deferred-context-snapshot",
+    "category": "functional",
+    "description": "Snapshot context for deferred execution",
+    "steps": [
+      "Queue invocation with context containing packet data",
+      "Free original context before worker runs",
+      "Verify worker sees correct snapshotted scalar fields",
+      "Verify worker sees correct snapshotted buffer data",
+      "Verify TRUNCATED flag set if data was truncated"
+    ],
+    "passes": false
+  },
+  {
+    "id": "global-mbpf-object",
+    "category": "functional",
+    "description": "Implement mbpf global object with all helpers",
+    "steps": [
+      "Verify mbpf object is accessible in global scope",
+      "Verify mbpf.apiVersion property exists",
+      "Verify mbpf.log function exists",
+      "Verify mbpf.u64LoadLE and mbpf.u64StoreLE exist",
+      "Verify optional helpers present based on config"
+    ],
+    "passes": false
+  },
+  {
+    "id": "global-maps-object",
+    "category": "functional",
+    "description": "Implement maps global object with program's maps",
+    "steps": [
+      "Define two maps in manifest: myarray and myhash",
+      "Load program",
+      "Verify maps.myarray object exists with lookup/update methods",
+      "Verify maps.myhash object exists with lookup/update/delete methods"
+    ],
+    "passes": false
+  },
+  {
+    "id": "global-console-debug",
+    "category": "functional",
+    "description": "Implement optional console.log in debug mode",
+    "steps": [
+      "Enable debug mode in runtime config",
+      "Call console.log('test') from program",
+      "Verify output appears (mapped to mbpf.log)",
+      "Disable debug mode and verify console.log unavailable"
+    ],
+    "passes": false
+  },
+  {
+    "id": "disallowed-globals",
+    "category": "security",
+    "description": "Remove/disable dangerous global APIs",
+    "steps": [
+      "Verify Function constructor is not available",
+      "Verify eval is not available (unless explicitly enabled)",
+      "Verify filesystem APIs are not available",
+      "Verify network APIs are not available"
+    ],
+    "passes": false
+  },
+  {
+    "id": "toolchain-js-compile",
+    "category": "functional",
+    "description": "Implement JavaScript to bytecode compilation using mqjs",
+    "steps": [
+      "Write simple mbpf_prog JS file",
+      "Run mqjs --no-column -o prog.qjbc prog.js",
+      "Verify bytecode file is generated",
+      "Verify -m32 flag works for 32-bit targets"
+    ],
+    "passes": false
+  },
+  {
+    "id": "toolchain-manifest-gen",
+    "category": "functional",
+    "description": "Implement manifest generation from program metadata",
+    "steps": [
+      "Define manifest in CBOR or JSON format",
+      "Include all required fields per spec",
+      "Generate binary manifest section"
+    ],
+    "passes": false
+  },
+  {
+    "id": "toolchain-mbpf-assemble",
+    "category": "functional",
+    "description": "Implement .mbpf package assembly tool",
+    "steps": [
+      "Combine manifest, bytecode, and optional sections",
+      "Generate proper header with section table",
+      "Calculate CRC32 values if requested",
+      "Output valid .mbpf binary"
+    ],
+    "passes": false
+  },
+  {
+    "id": "toolchain-signing",
+    "category": "functional",
+    "description": "Implement Ed25519 signing for .mbpf packages",
+    "steps": [
+      "Generate Ed25519 keypair",
+      "Sign package bytes (excluding signature section)",
+      "Append MBPF_SEC_SIG section with signature",
+      "Verify signed package can be loaded"
+    ],
+    "passes": false
+  },
+  {
+    "id": "observability-counters",
+    "category": "functional",
+    "description": "Implement per-program statistics counters",
+    "steps": [
+      "Run programs and verify invocation count increments",
+      "Trigger success and verify success count increments",
+      "Trigger exception and verify exception count increments",
+      "Trigger OOM and verify OOM count increments",
+      "Trigger budget exceeded and verify counter increments"
+    ],
+    "passes": false
+  },
+  {
+    "id": "observability-trace-logs",
+    "category": "functional",
+    "description": "Implement optional trace logging with rate limiting",
+    "steps": [
+      "Enable trace logging in runtime config",
+      "Run programs and verify trace output",
+      "Trigger many events and verify rate limiting kicks in",
+      "Verify rate limit is configurable"
+    ],
+    "passes": false
+  },
+  {
+    "id": "observability-debug-symbols",
+    "category": "functional",
+    "description": "Support MBPF_SEC_DEBUG section with symbols",
+    "steps": [
+      "Create package with DEBUG section containing symbol names",
+      "Load package and verify debug info is available",
+      "Verify source hash for provenance tracking"
+    ],
+    "passes": false
+  },
+  {
+    "id": "target-word-size",
+    "category": "functional",
+    "description": "Support both 32-bit and 64-bit targets",
+    "steps": [
+      "Compile bytecode for 32-bit target",
+      "Load on 32-bit runtime - verify works",
+      "Compile bytecode for 64-bit target",
+      "Load on 64-bit runtime - verify works",
+      "Cross-load (32 on 64 or vice versa) - verify rejected"
+    ],
+    "passes": false
+  },
+  {
+    "id": "target-endianness",
+    "category": "functional",
+    "description": "Support little and big endian targets",
+    "steps": [
+      "Compile bytecode for little-endian target",
+      "Load on little-endian runtime - verify works",
+      "Verify endianness mismatch is rejected"
+    ],
+    "passes": false
+  },
+  {
+    "id": "example-net-rx-filter",
+    "category": "functional",
+    "description": "Implement and test example NET_RX filter program from spec",
+    "steps": [
+      "Create JS program that drops packets with first byte 0xFF",
+      "Compile to bytecode and package as .mbpf",
+      "Load and attach to NET_RX hook",
+      "Send packet with first byte 0xFF - verify dropped",
+      "Send packet with different first byte - verify passed"
+    ],
+    "passes": false
+  },
+  {
+    "id": "u64-representation",
+    "category": "functional",
+    "description": "Verify canonical u64 representation as [lo, hi] array",
+    "steps": [
+      "Create u64 value [0x12345678, 0x9ABCDEF0]",
+      "Verify represents 0x9ABCDEF012345678",
+      "Store to buffer and verify little-endian encoding",
+      "Load from buffer and verify reconstruction"
+    ],
+    "passes": false
+  },
+  {
+    "id": "rom-resident-stdlib",
+    "category": "performance",
+    "description": "Use MQuickJS ROM-resident stdlib mechanism",
+    "steps": [
+      "Build runtime with ROM-resident stdlib tables",
+      "Verify fast initialization (no RAM-based table copying)",
+      "Measure RAM usage reduction"
+    ],
+    "passes": false
+  },
+  {
+    "id": "no-dynamic-alloc-runtime",
+    "category": "performance",
+    "description": "Verify no dynamic allocation in untrusted code paths",
+    "steps": [
+      "Profile runtime during program execution",
+      "Verify no malloc/free calls from host library in hot path",
+      "Verify fixed memory buffer is used for JS heap"
+    ],
+    "passes": false
+  },
+  {
+    "id": "context-object-reuse",
+    "category": "performance",
+    "description": "Reuse ctx host object across invocations",
+    "steps": [
+      "Create ctx object once per instance",
+      "Update opaque pointer at each invocation",
+      "Verify no per-invocation allocation for ctx"
+    ],
+    "passes": false
+  },
+  {
+    "id": "lock-free-map-reads",
+    "category": "performance",
+    "description": "Implement lock-free reads for maps where possible",
+    "steps": [
+      "Benchmark concurrent map reads",
+      "Verify no lock contention on reads",
+      "Verify correctness under concurrent read/write"
+    ],
+    "passes": false
+  },
+  {
+    "id": "error-invalid-package",
+    "category": "functional",
+    "description": "Return appropriate errors for invalid packages",
+    "steps": [
+      "Load corrupted package - verify error code returned",
+      "Load truncated package - verify error code returned",
+      "Load package with wrong magic - verify error code returned",
+      "Verify error messages are informative"
+    ],
+    "passes": false
+  },
+  {
+    "id": "error-hook-mismatch",
+    "category": "functional",
+    "description": "Return appropriate errors for hook mismatches",
+    "steps": [
+      "Attach NET_RX program to TIMER hook - verify error",
+      "Attach program with wrong context ABI version - verify error"
+    ],
+    "passes": false
+  },
+  {
+    "id": "error-capability-denied",
+    "category": "functional",
+    "description": "Return appropriate errors for capability denials",
+    "steps": [
+      "Load program requesting ungrantable capability - verify error",
+      "Call helper without required capability - verify exception"
+    ],
+    "passes": false
+  },
+  {
+    "id": "test-unit-package-parser",
+    "category": "infrastructure",
+    "description": "Write unit tests for .mbpf package parser",
+    "steps": [
+      "Test valid package parsing",
+      "Test various invalid inputs",
+      "Test edge cases (empty sections, max sizes)"
+    ],
+    "passes": false
+  },
+  {
+    "id": "test-unit-map-operations",
+    "category": "infrastructure",
+    "description": "Write unit tests for map implementations",
+    "steps": [
+      "Test array map operations",
+      "Test hash map operations",
+      "Test edge cases and error conditions"
+    ],
+    "passes": false
+  },
+  {
+    "id": "test-unit-budget-enforcement",
+    "category": "infrastructure",
+    "description": "Write unit tests for budget enforcement",
+    "steps": [
+      "Test step budget enforcement",
+      "Test helper count enforcement",
+      "Test wall-time enforcement if supported"
+    ],
+    "passes": false
+  },
+  {
+    "id": "test-integration-load-run",
+    "category": "infrastructure",
+    "description": "Write integration tests for full load-run cycle",
+    "steps": [
+      "Create complete .mbpf package",
+      "Load, attach, run, detach, unload",
+      "Verify expected behavior at each step"
+    ],
+    "passes": false
+  },
+  {
+    "id": "test-integration-maps",
+    "category": "infrastructure",
+    "description": "Write integration tests for map persistence",
+    "steps": [
+      "Load program, populate maps, update program",
+      "Verify map data persists",
+      "Unload and verify cleanup"
+    ],
+    "passes": false
+  },
+  {
+    "id": "test-fuzz-package-parser",
+    "category": "security",
+    "description": "Fuzz test the .mbpf parser for security",
+    "steps": [
+      "Set up fuzzing harness for package parser",
+      "Run fuzzer with corpus of valid packages",
+      "Fix any crashes or hangs found"
+    ],
+    "passes": false
+  },
+  {
+    "id": "test-fuzz-helper-boundary",
+    "category": "security",
+    "description": "Fuzz test helper boundaries for security",
+    "steps": [
+      "Set up fuzzing for helper inputs",
+      "Test with malformed Uint8Arrays, invalid offsets",
+      "Fix any crashes found"
+    ],
+    "passes": false
+  },
+  {
+    "id": "docs-api-reference",
+    "category": "infrastructure",
+    "description": "Document C API reference for embedders",
+    "steps": [
+      "Document mbpf_runtime_t and all functions",
+      "Document configuration options",
+      "Include code examples"
+    ],
+    "passes": false
+  },
+  {
+    "id": "docs-js-api-reference",
+    "category": "infrastructure",
+    "description": "Document JavaScript API for program authors",
+    "steps": [
+      "Document mbpf global object and helpers",
+      "Document maps API",
+      "Document context object per hook type"
+    ],
+    "passes": false
+  },
+  {
+    "id": "docs-package-format",
+    "category": "infrastructure",
+    "description": "Document .mbpf package format for tooling authors",
+    "steps": [
+      "Document header and section layout",
+      "Document manifest schema",
+      "Document signing procedure"
+    ],
+    "passes": false
+  }
+]

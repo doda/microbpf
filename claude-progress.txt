@@ -1,0 +1,29 @@
+# microBPF Development Progress
+
+## Project Summary
+microBPF is a sandboxed, event-driven in-kernel programmability system for constrained
+kernels (RTOS, microkernels, embedded). Uses MQuickJS as execution engine.
+Defines: host ABI (helpers/maps), .mbpf package format, runtime resource model, hook model.
+
+## Tasks Identified: 97 total
+- Infrastructure: 12 (setup, tests, docs)
+- Functional: 71 (package format, runtime, maps, helpers, hooks, toolchain)
+- Security: 8 (signing, capabilities, isolation, fuzzing)
+- Performance: 4 (ROM stdlib, lock-free reads, no-alloc paths)
+
+## Recommended Architecture
+- Language: C (for embedded compatibility and MQuickJS integration)
+- Build: CMake or Makefile (cross-platform, embedded-friendly)
+- MQuickJS: Git submodule or vendored copy
+- Toolchain: Separate CLI tools in C or Python for .mbpf assembly
+- Tests: Unity or custom C test framework; fuzzing via libFuzzer
+
+## Current Status
+NOT YET IMPLEMENTED. First working agent should start with "project-setup" task.
+
+## Key Implementation Phases (from spec)
+1. Runtime MVP: package parsing, single hook, step budgeting, log helper
+2. Maps MVP: array + hash maps, JS map API
+3. Attach API: hook registry, multiple programs, per-CPU instances
+4. Signing: Ed25519 verification and policy engine
+5. Observability: counters, debug symbols, event output
