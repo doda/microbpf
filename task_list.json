@@ -280,7 +280,7 @@
       "Verify MBPF_NET_DROP (1) drops packet",
       "Verify MBPF_NET_ABORT (2) handled appropriately"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "hook-net-tx",

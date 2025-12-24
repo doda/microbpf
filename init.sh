@@ -240,6 +240,36 @@ if [ -f build/test_context_net_rx_v1 ]; then
     fi
 fi
 
+# Run TRACEPOINT hook tests
+if [ -f build/test_hook_tracepoint ]; then
+    ./build/test_hook_tracepoint
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: TRACEPOINT hook tests failed"
+        exit 1
+    fi
+fi
+
+# Run TIMER hook tests
+if [ -f build/test_hook_timer ]; then
+    ./build/test_hook_timer
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: TIMER hook tests failed"
+        exit 1
+    fi
+fi
+
+# Run NET_RX hook tests
+if [ -f build/test_hook_net_rx ]; then
+    ./build/test_hook_net_rx
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: NET_RX hook tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
