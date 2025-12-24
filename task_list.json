@@ -352,7 +352,7 @@
       "Verify mbpf_fini was called (best-effort)",
       "Load program without mbpf_fini - verify unload succeeds"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "return-value-semantics",

@@ -290,6 +290,16 @@ if [ -f build/test_mbpf_init ]; then
     fi
 fi
 
+# Run mbpf_fini entry point tests
+if [ -f build/test_mbpf_fini ]; then
+    ./build/test_mbpf_fini
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: mbpf_fini entry point tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
