@@ -23,6 +23,9 @@ extern "C" {
 
 #define MBPF_API_VERSION ((MBPF_VERSION_MAJOR << 16) | MBPF_VERSION_MINOR)
 
+/* Platform minimum heap size (8KB) - MQuickJS needs space for stdlib and basic operations */
+#define MBPF_MIN_HEAP_SIZE 8192
+
 /* Forward declarations */
 typedef struct mbpf_runtime mbpf_runtime_t;
 typedef struct mbpf_program mbpf_program_t;
@@ -75,6 +78,7 @@ typedef enum {
     MBPF_ERR_SECTION_BOUNDS     = -15,
     MBPF_ERR_SECTION_OVERLAP    = -16,
     MBPF_ERR_CRC_MISMATCH       = -17,
+    MBPF_ERR_HEAP_TOO_SMALL     = -18,
 } mbpf_error_t;
 
 /* Capabilities */

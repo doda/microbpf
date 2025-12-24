@@ -160,6 +160,16 @@ if [ -f build/test_program_load ]; then
     fi
 fi
 
+# Run program load validation tests
+if [ -f build/test_program_load_validation ]; then
+    ./build/test_program_load_validation
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Program load validation tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

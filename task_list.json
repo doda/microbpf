@@ -134,7 +134,7 @@
       "Attempt to load .mbpf with heap_size below platform minimum - verify rejection",
       "Attempt to load .mbpf with incompatible bytecode version - verify rejection"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "program-unload",

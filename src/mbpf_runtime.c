@@ -136,6 +136,13 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         return err;
     }
 
+    /* Validate heap_size is at least the platform minimum */
+    if (prog->manifest.heap_size < MBPF_MIN_HEAP_SIZE) {
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_HEAP_TOO_SMALL;
+    }
+
     /* Get bytecode section */
     const void *bytecode_data;
     size_t bytecode_len;
