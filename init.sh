@@ -90,6 +90,16 @@ if [ -f build/test_package_header ]; then
     fi
 fi
 
+# Run section table tests
+if [ -f build/test_section_table ]; then
+    ./build/test_section_table
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Section table tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

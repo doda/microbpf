@@ -57,21 +57,23 @@ typedef enum {
 
 /* Error codes */
 typedef enum {
-    MBPF_OK                    = 0,
-    MBPF_ERR_INVALID_ARG       = -1,
-    MBPF_ERR_NO_MEM            = -2,
-    MBPF_ERR_INVALID_PACKAGE   = -3,
-    MBPF_ERR_INVALID_MAGIC     = -4,
-    MBPF_ERR_UNSUPPORTED_VER   = -5,
-    MBPF_ERR_MISSING_SECTION   = -6,
-    MBPF_ERR_INVALID_BYTECODE  = -7,
-    MBPF_ERR_HOOK_MISMATCH     = -8,
-    MBPF_ERR_CAPABILITY_DENIED = -9,
-    MBPF_ERR_BUDGET_EXCEEDED   = -10,
-    MBPF_ERR_ALREADY_ATTACHED  = -11,
-    MBPF_ERR_NOT_ATTACHED      = -12,
-    MBPF_ERR_NESTED_EXEC       = -13,
-    MBPF_ERR_SIGNATURE         = -14,
+    MBPF_OK                     = 0,
+    MBPF_ERR_INVALID_ARG        = -1,
+    MBPF_ERR_NO_MEM             = -2,
+    MBPF_ERR_INVALID_PACKAGE    = -3,
+    MBPF_ERR_INVALID_MAGIC      = -4,
+    MBPF_ERR_UNSUPPORTED_VER    = -5,
+    MBPF_ERR_MISSING_SECTION    = -6,
+    MBPF_ERR_INVALID_BYTECODE   = -7,
+    MBPF_ERR_HOOK_MISMATCH      = -8,
+    MBPF_ERR_CAPABILITY_DENIED  = -9,
+    MBPF_ERR_BUDGET_EXCEEDED    = -10,
+    MBPF_ERR_ALREADY_ATTACHED   = -11,
+    MBPF_ERR_NOT_ATTACHED       = -12,
+    MBPF_ERR_NESTED_EXEC        = -13,
+    MBPF_ERR_SIGNATURE          = -14,
+    MBPF_ERR_SECTION_BOUNDS     = -15,
+    MBPF_ERR_SECTION_OVERLAP    = -16,
 } mbpf_error_t;
 
 /* Capabilities */

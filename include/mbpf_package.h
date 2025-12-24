@@ -96,6 +96,11 @@ typedef struct {
 int mbpf_package_parse_header(const void *data, size_t len,
                                mbpf_file_header_t *out_header);
 
+int mbpf_package_parse_section_table(const void *data, size_t len,
+                                      mbpf_section_desc_t *out_sections,
+                                      uint32_t max_sections,
+                                      uint32_t *out_count);
+
 int mbpf_package_get_section(const void *data, size_t len,
                               mbpf_section_type_t type,
                               const void **out_data, size_t *out_len);

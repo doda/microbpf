@@ -36,7 +36,7 @@
       "Verify parser detects overlapping sections and rejects them",
       "Verify unknown section types are skipped gracefully"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "package-format-manifest",

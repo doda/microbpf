@@ -95,6 +95,96 @@ int mbpf_package_parse_header(const void *data, size_t len,
     return MBPF_OK;
 }
 
+/* Helper to read a section descriptor from buffer */
+static void read_section_desc(const uint8_t *buf, mbpf_section_desc_t *desc) {
+    desc->type = (uint32_t)buf[0] |
+                 ((uint32_t)buf[1] << 8) |
+                 ((uint32_t)buf[2] << 16) |
+                 ((uint32_t)buf[3] << 24);
+    desc->offset = (uint32_t)buf[4] |
+                   ((uint32_t)buf[5] << 8) |
+                   ((uint32_t)buf[6] << 16) |
+                   ((uint32_t)buf[7] << 24);
+    desc->length = (uint32_t)buf[8] |
+                   ((uint32_t)buf[9] << 8) |
+                   ((uint32_t)buf[10] << 16) |
+                   ((uint32_t)buf[11] << 24);
+    desc->crc32 = (uint32_t)buf[12] |
+                  ((uint32_t)buf[13] << 8) |
+                  ((uint32_t)buf[14] << 16) |
+                  ((uint32_t)buf[15] << 24);
+}
+
+/* Check if two sections overlap */
+static bool sections_overlap(const mbpf_section_desc_t *a,
+                             const mbpf_section_desc_t *b) {
+    /* Empty sections don't overlap */
+    if (a->length == 0 || b->length == 0) {
+        return false;
+    }
+
+    uint64_t a_start = a->offset;
+    uint64_t a_end = (uint64_t)a->offset + a->length;
+    uint64_t b_start = b->offset;
+    uint64_t b_end = (uint64_t)b->offset + b->length;
+
+    /* Check overlap: sections overlap if neither ends before the other starts */
+    return (a_start < b_end) && (b_start < a_end);
+}
+
+/* Parse section table */
+int mbpf_package_parse_section_table(const void *data, size_t len,
+                                      mbpf_section_desc_t *out_sections,
+                                      uint32_t max_sections,
+                                      uint32_t *out_count) {
+    if (!data || !out_count) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    mbpf_file_header_t header;
+    int err = mbpf_package_parse_header(data, len, &header);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    *out_count = header.section_count;
+
+    /* If caller just wants the count, we're done */
+    if (!out_sections) {
+        return MBPF_OK;
+    }
+
+    if (max_sections < header.section_count) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    const uint8_t *buf = data;
+    const uint8_t *section_table = buf + sizeof(mbpf_file_header_t);
+
+    /* Read all section descriptors */
+    for (uint32_t i = 0; i < header.section_count; i++) {
+        const uint8_t *sec = section_table + i * sizeof(mbpf_section_desc_t);
+        read_section_desc(sec, &out_sections[i]);
+
+        /* Validate section bounds */
+        uint64_t end = (uint64_t)out_sections[i].offset + out_sections[i].length;
+        if (end > len) {
+            return MBPF_ERR_SECTION_BOUNDS;
+        }
+    }
+
+    /* Check for overlapping sections */
+    for (uint32_t i = 0; i < header.section_count; i++) {
+        for (uint32_t j = i + 1; j < header.section_count; j++) {
+            if (sections_overlap(&out_sections[i], &out_sections[j])) {
+                return MBPF_ERR_SECTION_OVERLAP;
+            }
+        }
+    }
+
+    return MBPF_OK;
+}
+
 /* Get a section by type */
 int mbpf_package_get_section(const void *data, size_t len,
                               mbpf_section_type_t type,

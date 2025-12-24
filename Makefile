@@ -33,12 +33,13 @@ LIB = $(BUILD_DIR)/libmbpf.a
 TEST_BIN = $(BUILD_DIR)/test_basic
 TEST_PKG_HEADER = $(BUILD_DIR)/test_package_header
 TEST_PARSE_FILE = $(BUILD_DIR)/test_parse_file
+TEST_SECTION_TABLE = $(BUILD_DIR)/test_section_table
 CREATE_MBPF = $(BUILD_DIR)/create_mbpf
 MQJS = $(MQUICKJS_DIR)/mqjs
 
 .PHONY: all clean test mquickjs tools
 
-all: $(LIB) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_PARSE_FILE) $(CREATE_MBPF) $(MQJS)
+all: $(LIB) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_PARSE_FILE) $(TEST_SECTION_TABLE) $(CREATE_MBPF) $(MQJS)
 
 tools: $(CREATE_MBPF)
 
@@ -83,14 +84,18 @@ $(BUILD_DIR)/test_package_header: $(TEST_DIR)/test_package_header.c $(LIB) | $(B
 $(BUILD_DIR)/test_parse_file: $(TEST_DIR)/test_parse_file.c $(LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
+$(BUILD_DIR)/test_section_table: $(TEST_DIR)/test_section_table.c $(LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
+
 # Tool binaries
 $(BUILD_DIR)/create_mbpf: $(TOOLS_DIR)/create_mbpf.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Run tests
-test: $(TEST_BIN) $(TEST_PKG_HEADER)
+test: $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_SECTION_TABLE)
 	./$(TEST_BIN)
 	./$(TEST_PKG_HEADER)
+	./$(TEST_SECTION_TABLE)
 
 # Verify MQuickJS compiler works
 test-mqjs: $(MQJS)
