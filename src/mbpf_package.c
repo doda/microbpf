@@ -6,6 +6,7 @@
 
 #include "mbpf.h"
 #include "mbpf_package.h"
+#include "mquickjs.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -1297,5 +1298,139 @@ int mbpf_package_validate_crc(const void *data, size_t len) {
         }
     }
 
+    return MBPF_OK;
+}
+
+/* ============================================================================
+ * Bytecode Loading API
+ * ============================================================================ */
+
+/*
+ * MQuickJS bytecode version calculation (mirrors mquickjs.c):
+ *   - JS_BYTECODE_VERSION_32 = 0x0001 (base version)
+ *   - For 64-bit (JSW=8): version = 0x0001 | ((8 & 8) << 12) = 0x8001
+ *   - For 32-bit (JSW=4): version = 0x0001 | ((4 & 8) << 12) = 0x0001
+ *
+ * We use sizeof(void*) to detect word size since JSW is not exposed in the header.
+ */
+#define MBPF_JS_BYTECODE_VERSION_32 0x0001
+#define MBPF_JSW (sizeof(void*))
+#define MBPF_JS_BYTECODE_VERSION \
+    (MBPF_JS_BYTECODE_VERSION_32 | ((MBPF_JSW & 8) << 12))
+
+/* Get the expected bytecode version for this runtime */
+uint16_t mbpf_bytecode_version(void) {
+    /*
+     * Return the bytecode version expected by this runtime.
+     * This is computed using the same formula as MQuickJS to ensure
+     * compatibility. The version encodes both the format version and
+     * the word size (32-bit vs 64-bit).
+     */
+    return MBPF_JS_BYTECODE_VERSION;
+}
+
+/* Check if bytecode is valid MQuickJS bytecode (no context required) */
+int mbpf_bytecode_check(const uint8_t *bytecode, size_t bytecode_len,
+                        mbpf_bytecode_info_t *out_info) {
+    if (!bytecode || bytecode_len < sizeof(JSBytecodeHeader)) {
+        if (out_info) {
+            out_info->is_valid = 0;
+            out_info->bytecode_version = 0;
+            out_info->relocation_result = -1;
+        }
+        return MBPF_ERR_INVALID_BYTECODE;
+    }
+
+    /* Check using JS_IsBytecode */
+    int is_valid = JS_IsBytecode(bytecode, bytecode_len);
+
+    if (out_info) {
+        out_info->is_valid = is_valid;
+        out_info->relocation_result = -1;  /* Not relocated yet */
+
+        /* Extract version from header */
+        const JSBytecodeHeader *hdr = (const JSBytecodeHeader *)bytecode;
+        out_info->bytecode_version = hdr->version;
+    }
+
+    if (!is_valid) {
+        return MBPF_ERR_INVALID_BYTECODE;
+    }
+
+    return MBPF_OK;
+}
+
+/*
+ * Validate and load bytecode from a writable buffer.
+ *
+ * This function:
+ * 1. Checks if bytecode is valid using JS_IsBytecode
+ * 2. Validates bytecode version matches runtime expectations
+ * 3. Calls JS_RelocateBytecode to prepare for execution
+ * 4. Calls JS_LoadBytecode to get main_func
+ */
+int mbpf_bytecode_load(JSContext *ctx,
+                       uint8_t *bytecode, size_t bytecode_len,
+                       mbpf_bytecode_info_t *out_info,
+                       void *out_main_func) {
+    if (!ctx || !bytecode || bytecode_len < sizeof(JSBytecodeHeader)) {
+        if (out_info) {
+            out_info->is_valid = 0;
+            out_info->bytecode_version = 0;
+            out_info->relocation_result = -1;
+        }
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Initialize output info */
+    mbpf_bytecode_info_t info = {0};
+
+    /* Step 1: Check if valid bytecode using JS_IsBytecode */
+    if (!JS_IsBytecode(bytecode, bytecode_len)) {
+        info.is_valid = 0;
+        if (out_info) *out_info = info;
+        return MBPF_ERR_INVALID_BYTECODE;
+    }
+    info.is_valid = 1;
+
+    /* Step 2: Extract and verify bytecode version */
+    const JSBytecodeHeader *hdr = (const JSBytecodeHeader *)bytecode;
+    info.bytecode_version = hdr->version;
+
+    /*
+     * Check bytecode version matches runtime expectations.
+     * The high bit (0x8000) indicates 64-bit vs 32-bit word size.
+     * The low bits indicate the bytecode format version.
+     * Both must match for the bytecode to be compatible.
+     */
+    uint16_t expected_version = mbpf_bytecode_version();
+    if (info.bytecode_version != expected_version) {
+        if (out_info) *out_info = info;
+        return MBPF_ERR_UNSUPPORTED_VER;
+    }
+
+    /* Step 3: Relocate bytecode (modifies buffer in place) */
+    int reloc_result = JS_RelocateBytecode(ctx, bytecode, (uint32_t)bytecode_len);
+    info.relocation_result = reloc_result;
+
+    if (reloc_result != 0) {
+        if (out_info) *out_info = info;
+        return MBPF_ERR_INVALID_BYTECODE;
+    }
+
+    /* Step 4: Load bytecode and get main_func */
+    JSValue main_func = JS_LoadBytecode(ctx, bytecode);
+
+    if (JS_IsException(main_func)) {
+        if (out_info) *out_info = info;
+        return MBPF_ERR_INVALID_BYTECODE;
+    }
+
+    /* Return the main_func as a JSValue */
+    if (out_main_func) {
+        *(JSValue *)out_main_func = main_func;
+    }
+
+    if (out_info) *out_info = info;
     return MBPF_OK;
 }

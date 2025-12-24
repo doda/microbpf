@@ -122,6 +122,47 @@ void mbpf_manifest_free(mbpf_manifest_t *manifest);
 uint32_t mbpf_crc32(const void *data, size_t len);
 int mbpf_package_validate_crc(const void *data, size_t len);
 
+/* Bytecode loading API */
+
+/* Result structure for bytecode validation */
+typedef struct {
+    uint16_t bytecode_version;    /* Version from JSBytecodeHeader */
+    int is_valid;                 /* Whether JS_IsBytecode returned true */
+    int relocation_result;        /* Result of JS_RelocateBytecode */
+} mbpf_bytecode_info_t;
+
+/*
+ * Validate and load bytecode from a writable buffer.
+ *
+ * The bytecode must be in a writable buffer because JS_RelocateBytecode
+ * modifies it in place. The caller must copy the bytecode section from
+ * the package before calling this function.
+ *
+ * Parameters:
+ *   ctx            - MQuickJS context (must be initialized)
+ *   bytecode       - Writable buffer containing bytecode
+ *   bytecode_len   - Length of bytecode buffer
+ *   out_info       - Optional: receives bytecode info/diagnostics
+ *   out_main_func  - Receives the main function JSValue if successful
+ *
+ * Returns:
+ *   MBPF_OK on success
+ *   MBPF_ERR_INVALID_BYTECODE if bytecode fails validation
+ *   MBPF_ERR_UNSUPPORTED_VER if bytecode version mismatches
+ */
+struct JSContext;
+int mbpf_bytecode_load(struct JSContext *ctx,
+                       uint8_t *bytecode, size_t bytecode_len,
+                       mbpf_bytecode_info_t *out_info,
+                       void *out_main_func);
+
+/* Check if bytecode is valid MQuickJS bytecode */
+int mbpf_bytecode_check(const uint8_t *bytecode, size_t bytecode_len,
+                        mbpf_bytecode_info_t *out_info);
+
+/* Get the expected bytecode version for this runtime */
+uint16_t mbpf_bytecode_version(void);
+
 #ifdef __cplusplus
 }
 #endif

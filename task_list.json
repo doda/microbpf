@@ -68,7 +68,7 @@
       "Verify loader rejects bytecode that fails JS_IsBytecode check",
       "Verify loader rejects bytecode with mismatched JS_BYTECODE_VERSION"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "package-format-crc-validation",

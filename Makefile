@@ -19,7 +19,7 @@ MQUICKJS_OBJS = $(BUILD_DIR)/mquickjs.o $(BUILD_DIR)/cutils.o \
                 $(BUILD_DIR)/dtoa.o $(BUILD_DIR)/libm.o
 
 # Source files
-MBPF_SRCS = $(SRC_DIR)/mbpf_runtime.c $(SRC_DIR)/mbpf_package.c
+MBPF_SRCS = $(SRC_DIR)/mbpf_runtime.c $(SRC_DIR)/mbpf_package.c $(SRC_DIR)/mbpf_stdlib.c
 MBPF_OBJS = $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(MBPF_SRCS))
 
 # Include paths
@@ -35,12 +35,13 @@ TEST_PKG_HEADER = $(BUILD_DIR)/test_package_header
 TEST_PARSE_FILE = $(BUILD_DIR)/test_parse_file
 TEST_SECTION_TABLE = $(BUILD_DIR)/test_section_table
 TEST_MANIFEST = $(BUILD_DIR)/test_manifest
+TEST_BYTECODE = $(BUILD_DIR)/test_bytecode
 CREATE_MBPF = $(BUILD_DIR)/create_mbpf
 MQJS = $(MQUICKJS_DIR)/mqjs
 
 .PHONY: all clean test mquickjs tools
 
-all: $(LIB) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_PARSE_FILE) $(TEST_SECTION_TABLE) $(TEST_MANIFEST) $(CREATE_MBPF) $(MQJS)
+all: $(LIB) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_PARSE_FILE) $(TEST_SECTION_TABLE) $(TEST_MANIFEST) $(TEST_BYTECODE) $(CREATE_MBPF) $(MQJS)
 
 tools: $(CREATE_MBPF)
 
@@ -71,8 +72,8 @@ $(BUILD_DIR)/libm.o: $(MQUICKJS_DIR)/libm.c | $(BUILD_DIR) $(MQJS)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Static library
-$(LIB): $(MBPF_OBJS) | $(BUILD_DIR)
+# Static library (includes MQuickJS)
+$(LIB): $(MBPF_OBJS) $(MQUICKJS_OBJS) | $(BUILD_DIR)
 	$(AR) rcs $@ $^
 
 # Test binaries
@@ -91,16 +92,20 @@ $(BUILD_DIR)/test_section_table: $(TEST_DIR)/test_section_table.c $(LIB) | $(BUI
 $(BUILD_DIR)/test_manifest: $(TEST_DIR)/test_manifest.c $(LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
+$(BUILD_DIR)/test_bytecode: $(TEST_DIR)/test_bytecode.c $(LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
+
 # Tool binaries
 $(BUILD_DIR)/create_mbpf: $(TOOLS_DIR)/create_mbpf.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Run tests
-test: $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_SECTION_TABLE) $(TEST_MANIFEST)
+test: $(MQJS) $(TEST_BIN) $(TEST_PKG_HEADER) $(TEST_SECTION_TABLE) $(TEST_MANIFEST) $(TEST_BYTECODE)
 	./$(TEST_BIN)
 	./$(TEST_PKG_HEADER)
 	./$(TEST_SECTION_TABLE)
 	./$(TEST_MANIFEST)
+	./$(TEST_BYTECODE)
 
 # Verify MQuickJS compiler works
 test-mqjs: $(MQJS)

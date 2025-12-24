@@ -6,9 +6,13 @@
 
 #include "mbpf.h"
 #include "mbpf_package.h"
+#include "mquickjs.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+/* Get the JS stdlib (defined in mbpf_stdlib.c) */
+extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
 
 /* Internal structures */
 struct mbpf_runtime {
@@ -27,6 +31,13 @@ struct mbpf_program {
     mbpf_hook_id_t attached_hook;
     bool attached;
     struct mbpf_program *next;
+
+    /* MQuickJS state */
+    void *js_heap;              /* Heap memory for JS context */
+    JSContext *js_ctx;          /* MQuickJS context */
+    JSValue main_func;          /* Loaded main function */
+    bool js_initialized;        /* Whether JS context is set up */
+    mbpf_bytecode_info_t bc_info; /* Bytecode info from loading */
 };
 
 /* Default log handler */
@@ -87,6 +98,8 @@ void mbpf_runtime_shutdown(mbpf_runtime_t *rt) {
 /* Program loading */
 int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
                       const mbpf_load_opts_t *opts, mbpf_program_t **out_prog) {
+    (void)opts;  /* TODO: use load options */
+
     if (!rt || !pkg || pkg_len < sizeof(mbpf_file_header_t) || !out_prog) {
         return MBPF_ERR_INVALID_ARG;
     }
@@ -144,6 +157,44 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     memcpy(prog->bytecode, bytecode_data, bytecode_len);
     prog->bytecode_len = bytecode_len;
 
+    /* Allocate JS heap */
+    size_t heap_size = prog->manifest.heap_size;
+    if (heap_size < rt->config.default_heap_size) {
+        heap_size = rt->config.default_heap_size;
+    }
+    prog->js_heap = malloc(heap_size);
+    if (!prog->js_heap) {
+        free(prog->bytecode);
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_NO_MEM;
+    }
+
+    /* Create JS context (must use the same stdlib that bytecode was compiled with) */
+    prog->js_ctx = JS_NewContext(prog->js_heap, heap_size, mbpf_get_js_stdlib());
+    if (!prog->js_ctx) {
+        free(prog->js_heap);
+        free(prog->bytecode);
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_NO_MEM;
+    }
+
+    /* Load bytecode - this calls JS_IsBytecode, JS_RelocateBytecode, JS_LoadBytecode */
+    err = mbpf_bytecode_load(prog->js_ctx,
+                             prog->bytecode, prog->bytecode_len,
+                             &prog->bc_info, &prog->main_func);
+    if (err != MBPF_OK) {
+        JS_FreeContext(prog->js_ctx);
+        free(prog->js_heap);
+        free(prog->bytecode);
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return err;
+    }
+
+    prog->js_initialized = true;
+
     /* Add to runtime's program list */
     prog->next = rt->programs;
     rt->programs = prog;
@@ -169,7 +220,15 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
         rt->program_count--;
     }
 
+    /* Free JS context */
+    if (prog->js_initialized) {
+        JS_FreeContext(prog->js_ctx);
+        prog->js_ctx = NULL;
+        prog->js_initialized = false;
+    }
+
     /* Free resources */
+    free(prog->js_heap);
     mbpf_manifest_free(&prog->manifest);
     free(prog->bytecode);
     free(prog);
