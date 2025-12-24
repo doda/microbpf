@@ -30,6 +30,7 @@ struct mbpf_program {
     mbpf_stats_t stats;
     mbpf_hook_id_t attached_hook;
     bool attached;
+    bool unloaded;              /* Track if already unloaded (for double-unload protection) */
     struct mbpf_program *next;
 
     /* MQuickJS state */
@@ -211,13 +212,68 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     return MBPF_OK;
 }
 
+/*
+ * Call mbpf_fini() if defined in the program.
+ * This is best-effort - exceptions are caught and logged.
+ */
+static void call_mbpf_fini(mbpf_program_t *prog) {
+    if (!prog->js_initialized || !prog->js_ctx) {
+        return;
+    }
+
+    JSContext *ctx = prog->js_ctx;
+
+    /* Get global object */
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsUndefined(global) || JS_IsException(global)) {
+        return;
+    }
+
+    /* Look up mbpf_fini function */
+    JSValue fini_func = JS_GetPropertyStr(ctx, global, "mbpf_fini");
+    if (JS_IsUndefined(fini_func) || !JS_IsFunction(ctx, fini_func)) {
+        /* mbpf_fini not defined - this is fine, it's optional */
+        return;
+    }
+
+    /* Check stack space: we need 2 slots (function + this) */
+    if (JS_StackCheck(ctx, 2)) {
+        /* Stack overflow - skip calling fini */
+        if (prog->runtime && prog->runtime->config.log_fn) {
+            prog->runtime->config.log_fn(2, "mbpf_fini: stack overflow, skipping");
+        }
+        return;
+    }
+
+    /* Call mbpf_fini with no arguments */
+    JS_PushArg(ctx, fini_func);   /* function */
+    JS_PushArg(ctx, JS_NULL);     /* this */
+    JSValue result = JS_Call(ctx, 0);
+
+    /* Handle exceptions (best-effort, log and continue) */
+    if (JS_IsException(result)) {
+        if (prog->runtime && prog->runtime->config.log_fn) {
+            prog->runtime->config.log_fn(2, "mbpf_fini threw exception");
+        }
+        JS_GetException(ctx);  /* Clear the exception */
+    }
+}
+
 /* Program unloading */
 int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
     if (!rt || !prog) {
         return MBPF_ERR_INVALID_ARG;
     }
 
-    /* Remove from list */
+    /* Handle double-unload gracefully */
+    if (prog->unloaded) {
+        return MBPF_ERR_ALREADY_UNLOADED;
+    }
+
+    /* Mark as unloaded immediately to prevent double-unload */
+    prog->unloaded = true;
+
+    /* Remove from runtime's program list */
     mbpf_program_t **pp = &rt->programs;
     while (*pp && *pp != prog) {
         pp = &(*pp)->next;
@@ -227,6 +283,18 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
         rt->program_count--;
     }
 
+    /* Call mbpf_fini() if defined (best-effort) */
+    if (prog->js_initialized) {
+        call_mbpf_fini(prog);
+    }
+
+    /* TODO: Clean up associated maps when map subsystem is implemented.
+     * Map cleanup policy:
+     * - Shared maps (referenced by other programs) should not be freed
+     * - Program-private maps should be freed
+     * - Maps with MBPF_MAP_F_PERSIST flag may need special handling
+     */
+
     /* Free JS context */
     if (prog->js_initialized) {
         JS_FreeContext(prog->js_ctx);
@@ -235,9 +303,15 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
     }
 
     /* Free resources */
-    free(prog->js_heap);
+    if (prog->js_heap) {
+        free(prog->js_heap);
+        prog->js_heap = NULL;
+    }
     mbpf_manifest_free(&prog->manifest);
-    free(prog->bytecode);
+    if (prog->bytecode) {
+        free(prog->bytecode);
+        prog->bytecode = NULL;
+    }
     free(prog);
 
     return MBPF_OK;
