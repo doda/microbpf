@@ -94,7 +94,7 @@
       "Verify unsigned packages are rejected in production mode",
       "Verify unsigned packages are allowed in development mode when configured"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "runtime-init-shutdown",

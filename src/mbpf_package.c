@@ -7,6 +7,7 @@
 #include "mbpf.h"
 #include "mbpf_package.h"
 #include "mquickjs.h"
+#include "ed25519.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -1474,5 +1475,181 @@ int mbpf_bytecode_load(JSContext *ctx,
     }
 
     if (out_info) *out_info = info;
+    return MBPF_OK;
+}
+
+/* ============================================================================
+ * Ed25519 Signature Verification
+ * ============================================================================ */
+
+/*
+ * Check if a package has a signature section.
+ */
+int mbpf_package_is_signed(const void *data, size_t len, int *out_signed) {
+    if (!data || !out_signed) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    *out_signed = 0;
+
+    mbpf_file_header_t header;
+    int err = mbpf_package_parse_header(data, len, &header);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    const uint8_t *buf = data;
+    const uint8_t *section_table = buf + sizeof(mbpf_file_header_t);
+
+    for (uint32_t i = 0; i < header.section_count; i++) {
+        const uint8_t *sec = section_table + i * sizeof(mbpf_section_desc_t);
+        uint32_t sec_type = (uint32_t)sec[0] |
+                            ((uint32_t)sec[1] << 8) |
+                            ((uint32_t)sec[2] << 16) |
+                            ((uint32_t)sec[3] << 24);
+
+        if (sec_type == MBPF_SEC_SIG) {
+            *out_signed = 1;
+            return MBPF_OK;
+        }
+    }
+
+    return MBPF_OK;
+}
+
+/*
+ * Get the signature section and the length of data it covers.
+ *
+ * The signature covers all bytes from file start up to (but excluding)
+ * the signature section offset. The signature section MUST be the last
+ * section in the file (i.e., sig_offset + 64 == file_length) to prevent
+ * unsigned data from being appended after the signature.
+ */
+int mbpf_package_get_signature(const void *data, size_t len,
+                                const uint8_t **out_sig,
+                                size_t *out_data_len) {
+    if (!data || !out_sig || !out_data_len) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    mbpf_file_header_t header;
+    int err = mbpf_package_parse_header(data, len, &header);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    const uint8_t *buf = data;
+    const uint8_t *section_table = buf + sizeof(mbpf_file_header_t);
+
+    for (uint32_t i = 0; i < header.section_count; i++) {
+        const uint8_t *sec = section_table + i * sizeof(mbpf_section_desc_t);
+        uint32_t sec_type = (uint32_t)sec[0] |
+                            ((uint32_t)sec[1] << 8) |
+                            ((uint32_t)sec[2] << 16) |
+                            ((uint32_t)sec[3] << 24);
+
+        if (sec_type == MBPF_SEC_SIG) {
+            uint32_t sec_offset = (uint32_t)sec[4] |
+                                  ((uint32_t)sec[5] << 8) |
+                                  ((uint32_t)sec[6] << 16) |
+                                  ((uint32_t)sec[7] << 24);
+            uint32_t sec_length = (uint32_t)sec[8] |
+                                  ((uint32_t)sec[9] << 8) |
+                                  ((uint32_t)sec[10] << 16) |
+                                  ((uint32_t)sec[11] << 24);
+
+            /* Signature section must be exactly 64 bytes */
+            if (sec_length != MBPF_ED25519_SIGNATURE_SIZE) {
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+
+            /*
+             * Validate section bounds using overflow-safe checks.
+             * We check: sec_offset + sec_length <= len
+             * Rewritten as: sec_length <= len - sec_offset (after checking sec_offset <= len)
+             */
+            if ((size_t)sec_offset > len) {
+                return MBPF_ERR_SECTION_BOUNDS;
+            }
+            if ((size_t)sec_length > len - (size_t)sec_offset) {
+                return MBPF_ERR_SECTION_BOUNDS;
+            }
+
+            /*
+             * Security: Signature section must be the LAST section in the file.
+             * This prevents unsigned data from being appended after the signature.
+             * The signature must cover all bytes before it and end at the file boundary.
+             * Since we already validated sec_offset + sec_length <= len above,
+             * we just need to check equality: sec_offset + sec_length == len
+             * Rewritten overflow-safe: len - sec_offset == sec_length
+             */
+            if (len - (size_t)sec_offset != (size_t)sec_length) {
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+
+            *out_sig = buf + sec_offset;
+            *out_data_len = sec_offset;  /* Signature covers bytes 0 to sec_offset */
+            return MBPF_OK;
+        }
+    }
+
+    return MBPF_ERR_MISSING_SECTION;
+}
+
+/*
+ * Validate Ed25519 signature on a package.
+ *
+ * Behavior depends on opts settings:
+ * - If package is signed and public_key is provided: verify signature
+ * - If package is signed and public_key is NULL: return error
+ * - If package is unsigned and production_mode: return error
+ * - If package is unsigned and allow_unsigned: return OK
+ */
+int mbpf_package_verify_signature(const void *data, size_t len,
+                                   const mbpf_sig_verify_opts_t *opts) {
+    if (!data || !opts) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Check if package is signed */
+    int is_signed = 0;
+    int err = mbpf_package_is_signed(data, len, &is_signed);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    if (!is_signed) {
+        /* Package is unsigned */
+        if (opts->production_mode) {
+            /* Production mode requires signatures */
+            return MBPF_ERR_MISSING_SECTION;
+        }
+        if (opts->allow_unsigned) {
+            /* Development mode allows unsigned packages */
+            return MBPF_OK;
+        }
+        /* Default: require signature */
+        return MBPF_ERR_MISSING_SECTION;
+    }
+
+    /* Package is signed - need a public key to verify */
+    if (!opts->public_key) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Get signature and data length */
+    const uint8_t *sig;
+    size_t data_len;
+    err = mbpf_package_get_signature(data, len, &sig, &data_len);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    /* Verify Ed25519 signature */
+    int verify_result = ed25519_verify(sig, data, data_len, opts->public_key);
+    if (verify_result != 0) {
+        return MBPF_ERR_SIGNATURE;
+    }
+
     return MBPF_OK;
 }

@@ -130,6 +130,16 @@ if [ -f build/test_crc ]; then
     fi
 fi
 
+# Run signature verification tests
+if [ -f build/test_signing ]; then
+    ./build/test_signing
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Signature verification tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

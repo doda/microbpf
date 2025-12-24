@@ -124,6 +124,73 @@ int mbpf_package_validate_crc(const void *data, size_t len);
 int mbpf_package_validate_section_crc(const void *data, size_t len,
                                        const mbpf_section_desc_t *section);
 
+/* Ed25519 signature constants */
+#define MBPF_ED25519_PUBLIC_KEY_SIZE 32
+#define MBPF_ED25519_SIGNATURE_SIZE  64
+
+/* Signature section layout: 64 bytes Ed25519 signature */
+typedef struct __attribute__((packed)) {
+    uint8_t signature[64];
+} mbpf_signature_section_t;
+
+/* Signature verification options */
+typedef struct {
+    const uint8_t *public_key;   /* 32-byte Ed25519 public key (NULL = no verification) */
+    int allow_unsigned;           /* Allow packages without signature section */
+    int production_mode;          /* Enforce signatures (disallows unsigned) */
+} mbpf_sig_verify_opts_t;
+
+/*
+ * Validate Ed25519 signature on a package.
+ *
+ * The signature covers all bytes from file start up to (but excluding) the
+ * signature section. The signature section must be the last section.
+ *
+ * Parameters:
+ *   data         - Package data
+ *   len          - Package length
+ *   opts         - Verification options
+ *
+ * Returns:
+ *   MBPF_OK on successful verification
+ *   MBPF_ERR_SIGNATURE if signature is invalid
+ *   MBPF_ERR_MISSING_SECTION if no signature and production_mode is set
+ *   MBPF_ERR_INVALID_ARG if public_key is NULL when signature exists
+ */
+int mbpf_package_verify_signature(const void *data, size_t len,
+                                   const mbpf_sig_verify_opts_t *opts);
+
+/*
+ * Check if a package has a signature section.
+ *
+ * Parameters:
+ *   data       - Package data
+ *   len        - Package length
+ *   out_signed - Receives 1 if signed, 0 otherwise
+ *
+ * Returns:
+ *   MBPF_OK on success
+ *   Error code on parse failure
+ */
+int mbpf_package_is_signed(const void *data, size_t len, int *out_signed);
+
+/*
+ * Get the signature section from a package.
+ *
+ * Parameters:
+ *   data         - Package data
+ *   len          - Package length
+ *   out_sig      - Receives pointer to 64-byte signature
+ *   out_data_len - Receives length of data covered by signature
+ *
+ * Returns:
+ *   MBPF_OK on success
+ *   MBPF_ERR_MISSING_SECTION if no signature section
+ */
+int mbpf_package_get_signature(const void *data, size_t len,
+                                const uint8_t **out_sig,
+                                size_t *out_data_len);
+
 /* Bytecode loading API */
 
 /* Result structure for bytecode validation */
