@@ -1,0 +1,188 @@
+/*
+ * microBPF Package Parser
+ *
+ * Parses .mbpf binary packages.
+ */
+
+#include "mbpf.h"
+#include "mbpf_package.h"
+#include <stdlib.h>
+#include <string.h>
+
+/* CRC32 lookup table */
+static uint32_t crc32_table[256];
+static bool crc32_table_initialized = false;
+
+static void crc32_init_table(void) {
+    if (crc32_table_initialized) return;
+
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int j = 0; j < 8; j++) {
+            if (c & 1) {
+                c = 0xEDB88320 ^ (c >> 1);
+            } else {
+                c >>= 1;
+            }
+        }
+        crc32_table[i] = c;
+    }
+    crc32_table_initialized = true;
+}
+
+uint32_t mbpf_crc32(const void *data, size_t len) {
+    crc32_init_table();
+
+    const uint8_t *buf = data;
+    uint32_t crc = 0xFFFFFFFF;
+
+    for (size_t i = 0; i < len; i++) {
+        crc = crc32_table[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+    }
+
+    return crc ^ 0xFFFFFFFF;
+}
+
+/* Parse file header */
+int mbpf_package_parse_header(const void *data, size_t len,
+                               mbpf_file_header_t *out_header) {
+    if (!data || len < sizeof(mbpf_file_header_t) || !out_header) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    const uint8_t *buf = data;
+
+    /* Read header fields (little-endian) */
+    out_header->magic = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
+    out_header->format_version = buf[4] | (buf[5] << 8);
+    out_header->header_size = buf[6] | (buf[7] << 8);
+    out_header->flags = buf[8] | (buf[9] << 8) | (buf[10] << 16) | (buf[11] << 24);
+    out_header->section_count = buf[12] | (buf[13] << 8) | (buf[14] << 16) | (buf[15] << 24);
+    out_header->file_crc32 = buf[16] | (buf[17] << 8) | (buf[18] << 16) | (buf[19] << 24);
+
+    /* Validate magic */
+    if (out_header->magic != MBPF_MAGIC) {
+        return MBPF_ERR_INVALID_MAGIC;
+    }
+
+    /* Validate version */
+    if (out_header->format_version < 1 ||
+        out_header->format_version > MBPF_FORMAT_VERSION) {
+        return MBPF_ERR_UNSUPPORTED_VER;
+    }
+
+    /* Validate header size */
+    size_t expected_size = sizeof(mbpf_file_header_t) +
+                           out_header->section_count * sizeof(mbpf_section_desc_t);
+    if (out_header->header_size < expected_size || out_header->header_size > len) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    return MBPF_OK;
+}
+
+/* Get a section by type */
+int mbpf_package_get_section(const void *data, size_t len,
+                              mbpf_section_type_t type,
+                              const void **out_data, size_t *out_len) {
+    if (!data || !out_data || !out_len) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    mbpf_file_header_t header;
+    int err = mbpf_package_parse_header(data, len, &header);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    const uint8_t *buf = data;
+    const uint8_t *section_table = buf + sizeof(mbpf_file_header_t);
+
+    for (uint32_t i = 0; i < header.section_count; i++) {
+        const uint8_t *sec = section_table + i * sizeof(mbpf_section_desc_t);
+
+        uint32_t sec_type = sec[0] | (sec[1] << 8) | (sec[2] << 16) | (sec[3] << 24);
+        uint32_t sec_offset = sec[4] | (sec[5] << 8) | (sec[6] << 16) | (sec[7] << 24);
+        uint32_t sec_length = sec[8] | (sec[9] << 8) | (sec[10] << 16) | (sec[11] << 24);
+
+        if (sec_type == type) {
+            /* Validate bounds */
+            if (sec_offset + sec_length > len) {
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+
+            *out_data = buf + sec_offset;
+            *out_len = sec_length;
+            return MBPF_OK;
+        }
+    }
+
+    return MBPF_ERR_MISSING_SECTION;
+}
+
+/* Parse manifest (minimal JSON parser for required fields) */
+int mbpf_package_parse_manifest(const void *manifest_data, size_t len,
+                                 mbpf_manifest_t *out_manifest) {
+    if (!manifest_data || !out_manifest) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Initialize with defaults */
+    memset(out_manifest, 0, sizeof(mbpf_manifest_t));
+    strcpy(out_manifest->entry_symbol, "mbpf_prog");
+    out_manifest->heap_size = 16384;
+    out_manifest->budgets.max_steps = 100000;
+    out_manifest->budgets.max_helpers = 1000;
+    out_manifest->target.word_size = sizeof(void*) == 8 ? 64 : 32;
+    out_manifest->target.endianness = 0; /* little */
+
+    /* TODO: Implement proper CBOR/JSON parsing */
+    /* For now, just validate it's not empty */
+    if (len == 0) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    return MBPF_OK;
+}
+
+/* Free manifest resources */
+void mbpf_manifest_free(mbpf_manifest_t *manifest) {
+    if (!manifest) return;
+
+    if (manifest->maps) {
+        free(manifest->maps);
+        manifest->maps = NULL;
+    }
+    manifest->map_count = 0;
+}
+
+/* Validate CRCs */
+int mbpf_package_validate_crc(const void *data, size_t len) {
+    mbpf_file_header_t header;
+    int err = mbpf_package_parse_header(data, len, &header);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    /* Validate file CRC if present */
+    if (header.file_crc32 != 0) {
+        /* CRC is calculated over the entire file except the file_crc32 field */
+        uint32_t computed = mbpf_crc32(data, 16); /* Header before crc */
+        const uint8_t *rest = (const uint8_t *)data + 20;
+        size_t rest_len = len - 20;
+
+        /* Continue CRC over rest of file */
+        crc32_init_table();
+        uint32_t crc = computed ^ 0xFFFFFFFF;
+        for (size_t i = 0; i < rest_len; i++) {
+            crc = crc32_table[(crc ^ rest[i]) & 0xFF] ^ (crc >> 8);
+        }
+        computed = crc ^ 0xFFFFFFFF;
+
+        if (computed != header.file_crc32) {
+            return MBPF_ERR_INVALID_PACKAGE;
+        }
+    }
+
+    return MBPF_OK;
+}

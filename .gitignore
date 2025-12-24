@@ -1,0 +1,33 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.d
+
+# MQuickJS build artifacts
+deps/mquickjs/*.o
+deps/mquickjs/*.d
+deps/mquickjs/*.host.o
+deps/mquickjs/mqjs
+deps/mquickjs/example
+deps/mquickjs/mqjs_stdlib
+deps/mquickjs/mqjs_stdlib.h
+deps/mquickjs/mquickjs_atom.h
+deps/mquickjs/example_stdlib
+deps/mquickjs/example_stdlib.h
+
+# Bytecode files
+*.qjbc
+*.bin
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
