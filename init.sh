@@ -300,6 +300,16 @@ if [ -f build/test_mbpf_fini ]; then
     fi
 fi
 
+# Run exception handling tests
+if [ -f build/test_exception_handling ]; then
+    ./build/test_exception_handling
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Exception handling tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

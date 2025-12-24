@@ -55,3 +55,4 @@ entry-point-mbpf-prog: verified entry function required and called
 entry-point-mbpf-init: verified optional mbpf_init load-time entry
 entry-point-mbpf-fini: verified optional mbpf_fini unload entry
 return-value-semantics: verified 32-bit signed return value handling
+exception-handling: reviewed exception defaults and tests

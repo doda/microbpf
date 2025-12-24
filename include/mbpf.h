@@ -106,6 +106,16 @@ typedef enum {
     MBPF_INSTANCE_COUNT = 2,    /* Use explicit instance_count */
 } mbpf_instance_mode_t;
 
+/*
+ * Exception default callback type.
+ * Returns the default return code when a program throws an exception.
+ * If NULL, built-in defaults are used:
+ *   - NET_RX, NET_TX: MBPF_NET_PASS (0)
+ *   - SECURITY: MBPF_SEC_DENY (1)
+ *   - Others: 0
+ */
+typedef int32_t (*mbpf_exception_default_fn)(mbpf_hook_type_t hook_type);
+
 /* Runtime configuration */
 typedef struct mbpf_runtime_config {
     size_t default_heap_size;
@@ -117,6 +127,7 @@ typedef struct mbpf_runtime_config {
     void (*log_fn)(int level, const char *msg);
     mbpf_instance_mode_t instance_mode;
     uint32_t instance_count;    /* Used when instance_mode == MBPF_INSTANCE_COUNT */
+    mbpf_exception_default_fn exception_default_fn; /* Optional per-hook default */
 } mbpf_runtime_config_t;
 
 /* Load options */
@@ -275,6 +286,9 @@ uint32_t mbpf_api_version(void);
 
 /* Hook ABI version query */
 uint32_t mbpf_hook_abi_version(mbpf_hook_type_t hook_type);
+
+/* Hook exception default query - returns the default return code on exception */
+int32_t mbpf_hook_exception_default(mbpf_hook_type_t hook_type);
 
 #ifdef __cplusplus
 }

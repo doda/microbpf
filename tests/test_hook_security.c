@@ -578,7 +578,8 @@ TEST(decision_based_on_action) {
 }
 
 /*
- * Test 10: Exception in program returns safe default (ALLOW)
+ * Test 10: Exception in program returns safe default (DENY for security hooks).
+ * Security hooks use fail-safe semantics: if a program fails, deny the operation.
  */
 TEST(exception_returns_safe_default) {
     const char *js_code =
@@ -618,8 +619,8 @@ TEST(exception_returns_safe_default) {
     int32_t out_rc = -1;
     err = mbpf_run(rt, MBPF_HOOK_SECURITY, &ctx, sizeof(ctx), &out_rc);
     ASSERT_EQ(err, MBPF_OK);
-    /* On exception, returns MBPF_NET_PASS which is 0, same as MBPF_SEC_ALLOW */
-    ASSERT_EQ(out_rc, MBPF_SEC_ALLOW);
+    /* On exception, security hooks return DENY (fail-safe) */
+    ASSERT_EQ(out_rc, MBPF_SEC_DENY);
 
     /* Verify exception was counted */
     mbpf_stats_t stats;

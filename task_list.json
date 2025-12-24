@@ -377,7 +377,7 @@
       "Verify exception is counted in per-program stats",
       "Configure different default for different hook types"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-array-basic",

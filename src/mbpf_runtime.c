@@ -69,6 +69,17 @@ static void default_log_fn(int level, const char *msg) {
     fprintf(stderr, "[mbpf %s] %s\n", level_str, msg);
 }
 
+/*
+ * Get the exception default for a hook type, using the runtime's custom
+ * callback if configured, otherwise falling back to built-in defaults.
+ */
+static int32_t get_exception_default(mbpf_runtime_t *rt, mbpf_hook_type_t hook_type) {
+    if (rt && rt->config.exception_default_fn) {
+        return rt->config.exception_default_fn(hook_type);
+    }
+    return mbpf_hook_exception_default(hook_type);
+}
+
 /* Get number of CPUs for per-CPU instance mode */
 static uint32_t get_num_cpus(void) {
 #ifdef _SC_NPROCESSORS_ONLN
@@ -1540,12 +1551,16 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_ERR_INVALID_ARG;
     }
 
+    /* Get the exception default for this hook type */
+    int32_t exception_default = get_exception_default(
+        prog->runtime, (mbpf_hook_type_t)hook);
+
     /* Check for nested execution using atomic compare-and-swap */
     int expected = 0;
     if (!__atomic_compare_exchange_n(&inst->in_use, &expected, 1,
                                       0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
         prog->stats.nested_dropped++;
-        *out_rc = MBPF_NET_PASS;  /* Default safe value */
+        *out_rc = exception_default;
         return MBPF_ERR_NESTED_EXEC;
     }
 
@@ -1555,7 +1570,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     JSValue global = JS_GetGlobalObject(ctx);
     if (JS_IsUndefined(global) || JS_IsException(global)) {
         prog->stats.exceptions++;
-        *out_rc = MBPF_NET_PASS;
+        *out_rc = exception_default;
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -1564,7 +1579,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     JSValue prog_func = JS_GetPropertyStr(ctx, global, prog->manifest.entry_symbol);
     if (JS_IsUndefined(prog_func) || !JS_IsFunction(ctx, prog_func)) {
         prog->stats.exceptions++;
-        *out_rc = MBPF_NET_PASS;
+        *out_rc = exception_default;
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -1572,7 +1587,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     /* Check stack space: we need 3 slots (arg + function + this) */
     if (JS_StackCheck(ctx, 3)) {
         prog->stats.exceptions++;
-        *out_rc = MBPF_NET_PASS;
+        *out_rc = exception_default;
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -1592,7 +1607,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     if (JS_IsException(result)) {
         prog->stats.exceptions++;
         JS_GetException(ctx);  /* Clear the exception */
-        *out_rc = MBPF_NET_PASS;
+        *out_rc = exception_default;
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -1622,7 +1637,9 @@ int mbpf_run(mbpf_runtime_t *rt, mbpf_hook_id_t hook,
         return MBPF_ERR_INVALID_ARG;
     }
 
-    *out_rc = MBPF_NET_PASS;  /* Default safe value */
+    /* Default value when no programs are attached: passthrough (0).
+     * This differs from exception defaults which are fail-safe. */
+    *out_rc = 0;
     int programs_run = 0;
 
     /* Find and execute all attached programs for this hook */
@@ -1687,6 +1704,30 @@ uint32_t mbpf_hook_abi_version(mbpf_hook_type_t hook_type) {
             return 1;
         default:
             return 0;  /* Unknown hook type */
+    }
+}
+
+/*
+ * Get the default return code for a hook type on exception.
+ * Used when a program throws an exception or encounters an error.
+ *
+ * Built-in defaults follow the principle of least privilege for security hooks
+ * and safe passthrough for network/observability hooks.
+ */
+int32_t mbpf_hook_exception_default(mbpf_hook_type_t hook_type) {
+    switch (hook_type) {
+        case MBPF_HOOK_NET_RX:
+        case MBPF_HOOK_NET_TX:
+            return MBPF_NET_PASS;  /* Allow packets to pass on error */
+
+        case MBPF_HOOK_SECURITY:
+            return MBPF_SEC_DENY;  /* Deny access on error (fail-safe) */
+
+        case MBPF_HOOK_TRACEPOINT:
+        case MBPF_HOOK_TIMER:
+        case MBPF_HOOK_CUSTOM:
+        default:
+            return 0;  /* No decision impact for observability hooks */
     }
 }
 
