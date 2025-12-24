@@ -707,6 +707,50 @@ static JSValue create_net_rx_ctx(JSContext *ctx, const void *ctx_blob, size_t ct
 }
 
 /*
+ * Create a TIMER context object from ctx_blob.
+ * Returns JS object with read-only timer_id, period_us, invocation_count,
+ * timestamp, and flags properties.
+ * Timer contexts do not have data buffers or read methods.
+ */
+static JSValue create_timer_ctx(JSContext *ctx, const void *ctx_blob, size_t ctx_len) {
+    if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_timer_v1_t)) {
+        return JS_NULL;
+    }
+
+    const mbpf_ctx_timer_v1_t *timer_ctx = (const mbpf_ctx_timer_v1_t *)ctx_blob;
+
+    /* Build JS code to create a new object with read-only properties. */
+    char code[1024];
+    int written = snprintf(code, sizeof(code),
+        "(function(){var o={};"
+        "Object.defineProperty(o,'timer_id',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'period_us',{get:function(){return %u;},set:function(){}});"
+        "Object.defineProperty(o,'invocation_count',{get:function(){return %llu;},set:function(){}});"
+        "Object.defineProperty(o,'timestamp',{get:function(){return %llu;},set:function(){}});"
+        "Object.defineProperty(o,'flags',{get:function(){return %u;},set:function(){}});"
+        "return o;})()",
+        timer_ctx->timer_id,
+        timer_ctx->period_us,
+        (unsigned long long)timer_ctx->invocation_count,
+        (unsigned long long)timer_ctx->timestamp,
+        (uint32_t)timer_ctx->flags);
+
+    if (written < 0 || (size_t)written >= sizeof(code)) {
+        return JS_NULL;
+    }
+
+    JSValue result = JS_Eval(ctx, code, strlen(code), "<ctx>", JS_EVAL_RETVAL);
+
+    if (JS_IsException(result)) {
+        JSValue ex = JS_GetException(ctx);
+        (void)ex;
+        return JS_NULL;
+    }
+
+    return result;
+}
+
+/*
  * Create a TRACEPOINT context object from ctx_blob.
  * Returns JS object with read-only tracepoint_id, timestamp, cpu, pid,
  * data_len, flags properties and readU8, readU16LE, readU32LE, readBytes methods.
@@ -894,6 +938,8 @@ static JSValue create_hook_ctx(JSContext *ctx, mbpf_hook_id_t hook,
             return create_tracepoint_ctx(ctx, ctx_blob, ctx_len);
 
         case MBPF_HOOK_TIMER:
+            return create_timer_ctx(ctx, ctx_blob, ctx_len);
+
         case MBPF_HOOK_SECURITY:
         case MBPF_HOOK_CUSTOM:
         default:

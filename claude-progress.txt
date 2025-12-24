@@ -46,3 +46,4 @@ instance-creation: reviewed and fixed per-CPU instance selection guard
 - 2025-12-24: Implemented ctx.readU8/readU16LE/readU32LE/readBytes with NET_RX tests.
 - 2025-12-24: Reviewed NET_RX v1 context binding, flags exposure, and added context tests.
 - 2025-12-24: Reviewed and validated MBPF_HOOK_TRACEPOINT context binding and tests.
+- 2025-12-24: Reviewed and validated MBPF_HOOK_TIMER context binding and tests.

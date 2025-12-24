@@ -266,7 +266,7 @@
       "Verify timer context provides expected fields",
       "Detach and verify timer stops"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "hook-net-rx",
