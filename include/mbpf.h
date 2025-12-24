@@ -148,6 +148,20 @@ typedef struct mbpf_ctx_net_rx_v1 {
     mbpf_read_bytes_fn read_fn;
 } mbpf_ctx_net_rx_v1_t;
 
+/* TRACEPOINT context (v1) */
+typedef struct mbpf_ctx_tracepoint_v1 {
+    uint32_t abi_version;   /* = 1 */
+    uint32_t tracepoint_id; /* Tracepoint identifier */
+    uint64_t timestamp;     /* Event timestamp (ns since boot or epoch) */
+    uint32_t cpu;           /* CPU on which event occurred */
+    uint32_t pid;           /* Process ID (0 if not applicable) */
+    uint32_t data_len;      /* Length of optional data */
+    uint16_t flags;         /* Context flags */
+    uint16_t reserved;      /* Padding for alignment */
+    const uint8_t *data;    /* Optional event-specific data */
+    mbpf_read_bytes_fn read_fn; /* Optional scatter-gather reader */
+} mbpf_ctx_tracepoint_v1_t;
+
 /* Core API */
 mbpf_runtime_t *mbpf_runtime_init(const mbpf_runtime_config_t *cfg);
 void mbpf_runtime_shutdown(mbpf_runtime_t *rt);

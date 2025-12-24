@@ -253,7 +253,7 @@
       "Verify program executes and return value is captured",
       "Verify return 0 indicates success, non-zero is soft failure"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "hook-timer",
