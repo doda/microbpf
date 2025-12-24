@@ -328,7 +328,7 @@
       "Load program without mbpf_prog - verify load fails",
       "Verify custom entry_symbol from manifest is honored"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "entry-point-mbpf-init",

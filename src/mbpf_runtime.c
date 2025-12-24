@@ -141,6 +141,29 @@ void mbpf_runtime_shutdown(mbpf_runtime_t *rt) {
 }
 
 /*
+ * Validate that the entry function exists in the JS context.
+ * Returns MBPF_OK if found, MBPF_ERR_MISSING_ENTRY if not.
+ */
+static int validate_entry_function(JSContext *ctx, const char *entry_symbol) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsUndefined(global) || JS_IsException(global)) {
+        JS_FreeValue(ctx, global);
+        return MBPF_ERR_MISSING_ENTRY;
+    }
+
+    JSValue entry_func = JS_GetPropertyStr(ctx, global, entry_symbol);
+    if (JS_IsUndefined(entry_func) || !JS_IsFunction(ctx, entry_func)) {
+        JS_FreeValue(ctx, entry_func);
+        JS_FreeValue(ctx, global);
+        return MBPF_ERR_MISSING_ENTRY;
+    }
+
+    JS_FreeValue(ctx, entry_func);
+    JS_FreeValue(ctx, global);
+    return MBPF_OK;
+}
+
+/*
  * Create a single instance for a program.
  * Each instance has its own heap, JS context, and loaded bytecode.
  */
@@ -189,6 +212,18 @@ static int create_instance(mbpf_program_t *prog, uint32_t idx, size_t heap_size,
     int err = mbpf_bytecode_load(inst->js_ctx, inst->bytecode, bytecode_len,
                                   &bc_info, &inst->main_func);
 
+    if (err != MBPF_OK) {
+        free(inst->bytecode);
+        inst->bytecode = NULL;
+        JS_FreeContext(inst->js_ctx);
+        inst->js_ctx = NULL;
+        free(inst->js_heap);
+        inst->js_heap = NULL;
+        return err;
+    }
+
+    /* Validate that the entry function exists in the loaded bytecode */
+    err = validate_entry_function(inst->js_ctx, prog->manifest.entry_symbol);
     if (err != MBPF_OK) {
         free(inst->bytecode);
         inst->bytecode = NULL;
@@ -1458,8 +1493,8 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_OK;
     }
 
-    /* Look up mbpf_prog function */
-    JSValue prog_func = JS_GetPropertyStr(ctx, global, "mbpf_prog");
+    /* Look up entry function (mbpf_prog or custom entry_symbol from manifest) */
+    JSValue prog_func = JS_GetPropertyStr(ctx, global, prog->manifest.entry_symbol);
     if (JS_IsUndefined(prog_func) || !JS_IsFunction(ctx, prog_func)) {
         prog->stats.exceptions++;
         *out_rc = MBPF_NET_PASS;
