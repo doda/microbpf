@@ -332,6 +332,16 @@ int mbpf_program_attach(mbpf_runtime_t *rt, mbpf_program_t *prog,
         return MBPF_ERR_HOOK_MISMATCH;
     }
 
+    /* Validate hook context ABI version compatibility.
+     * The program's required ABI version must match the runtime's supported version. */
+    uint32_t runtime_abi = mbpf_hook_abi_version((mbpf_hook_type_t)hook);
+    if (runtime_abi == 0) {
+        return MBPF_ERR_HOOK_MISMATCH;  /* Unknown hook type */
+    }
+    if (prog->manifest.hook_ctx_abi_version != runtime_abi) {
+        return MBPF_ERR_ABI_MISMATCH;
+    }
+
     if (prog->attached) {
         return MBPF_ERR_ALREADY_ATTACHED;
     }
@@ -483,4 +493,24 @@ const char *mbpf_version_string(void) {
 
 uint32_t mbpf_api_version(void) {
     return MBPF_API_VERSION;
+}
+
+/* Hook ABI version query */
+uint32_t mbpf_hook_abi_version(mbpf_hook_type_t hook_type) {
+    switch (hook_type) {
+        case MBPF_HOOK_TRACEPOINT:
+            return 1;
+        case MBPF_HOOK_TIMER:
+            return 1;
+        case MBPF_HOOK_NET_RX:
+            return 1;
+        case MBPF_HOOK_NET_TX:
+            return 1;
+        case MBPF_HOOK_SECURITY:
+            return 1;
+        case MBPF_HOOK_CUSTOM:
+            return 1;
+        default:
+            return 0;  /* Unknown hook type */
+    }
 }

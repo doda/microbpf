@@ -180,6 +180,26 @@ if [ -f build/test_program_unload ]; then
     fi
 fi
 
+# Run program attach/detach tests
+if [ -f build/test_attach_detach ]; then
+    ./build/test_attach_detach
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Program attach/detach tests failed"
+        exit 1
+    fi
+fi
+
+# Run program attach validation tests
+if [ -f build/test_attach_validation ]; then
+    ./build/test_attach_validation
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Program attach validation tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

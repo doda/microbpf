@@ -80,6 +80,7 @@ typedef enum {
     MBPF_ERR_CRC_MISMATCH       = -17,
     MBPF_ERR_HEAP_TOO_SMALL     = -18,
     MBPF_ERR_ALREADY_UNLOADED   = -19,
+    MBPF_ERR_ABI_MISMATCH       = -20,
 } mbpf_error_t;
 
 /* Capabilities */
@@ -161,6 +162,9 @@ int mbpf_program_stats(mbpf_program_t *prog, mbpf_stats_t *out_stats);
 /* Version info */
 const char *mbpf_version_string(void);
 uint32_t mbpf_api_version(void);
+
+/* Hook ABI version query */
+uint32_t mbpf_hook_abi_version(mbpf_hook_type_t hook_type);
 
 #ifdef __cplusplus
 }
