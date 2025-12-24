@@ -140,6 +140,16 @@ if [ -f build/test_signing ]; then
     fi
 fi
 
+# Run runtime init/shutdown tests
+if [ -f build/test_runtime ]; then
+    ./build/test_runtime
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Runtime init/shutdown tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

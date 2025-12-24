@@ -107,7 +107,7 @@
       "Verify no memory leaks on shutdown (valgrind or equivalent)",
       "Verify multiple init/shutdown cycles work correctly"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "program-load-basic",
