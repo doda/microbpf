@@ -143,23 +143,19 @@ void mbpf_runtime_shutdown(mbpf_runtime_t *rt) {
 /*
  * Validate that the entry function exists in the JS context.
  * Returns MBPF_OK if found, MBPF_ERR_MISSING_ENTRY if not.
+ * Note: MQuickJS uses a compacting GC - values don't need manual freeing.
  */
 static int validate_entry_function(JSContext *ctx, const char *entry_symbol) {
     JSValue global = JS_GetGlobalObject(ctx);
     if (JS_IsUndefined(global) || JS_IsException(global)) {
-        JS_FreeValue(ctx, global);
         return MBPF_ERR_MISSING_ENTRY;
     }
 
     JSValue entry_func = JS_GetPropertyStr(ctx, global, entry_symbol);
     if (JS_IsUndefined(entry_func) || !JS_IsFunction(ctx, entry_func)) {
-        JS_FreeValue(ctx, entry_func);
-        JS_FreeValue(ctx, global);
         return MBPF_ERR_MISSING_ENTRY;
     }
 
-    JS_FreeValue(ctx, entry_func);
-    JS_FreeValue(ctx, global);
     return MBPF_OK;
 }
 
@@ -256,6 +252,59 @@ static void free_instance(mbpf_instance_t *inst) {
         inst->js_heap = NULL;
     }
     inst->js_initialized = false;
+}
+
+/*
+ * Call mbpf_init() if defined in the program, for a specific instance.
+ * This is called at load time after maps are created but before first run.
+ * Returns MBPF_OK on success or if mbpf_init is not defined (optional).
+ */
+static int call_mbpf_init_on_instance(mbpf_instance_t *inst) {
+    if (!inst->js_initialized || !inst->js_ctx) {
+        return MBPF_OK;
+    }
+
+    JSContext *ctx = inst->js_ctx;
+
+    /* Get global object */
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsUndefined(global) || JS_IsException(global)) {
+        return MBPF_OK;  /* No global - treat as if mbpf_init not defined */
+    }
+
+    /* Look up mbpf_init function */
+    JSValue init_func = JS_GetPropertyStr(ctx, global, "mbpf_init");
+    if (JS_IsUndefined(init_func) || !JS_IsFunction(ctx, init_func)) {
+        /* mbpf_init not defined - this is fine, it's optional */
+        return MBPF_OK;
+    }
+
+    /* Check stack space: we need 2 slots (function + this) */
+    if (JS_StackCheck(ctx, 2)) {
+        /* Stack overflow */
+        if (inst->program && inst->program->runtime &&
+            inst->program->runtime->config.log_fn) {
+            inst->program->runtime->config.log_fn(2, "mbpf_init: stack overflow");
+        }
+        return MBPF_ERR_BUDGET_EXCEEDED;
+    }
+
+    /* Call mbpf_init with no arguments (order: function, this) */
+    JS_PushArg(ctx, init_func);   /* function */
+    JS_PushArg(ctx, JS_NULL);     /* this */
+    JSValue result = JS_Call(ctx, 0);
+
+    /* Handle exceptions */
+    if (JS_IsException(result)) {
+        if (inst->program && inst->program->runtime &&
+            inst->program->runtime->config.log_fn) {
+            inst->program->runtime->config.log_fn(2, "mbpf_init threw exception");
+        }
+        JS_GetException(ctx);  /* Clear the exception */
+        return MBPF_ERR_INIT_FAILED;
+    }
+
+    return MBPF_OK;
 }
 
 /* Program loading */
@@ -361,6 +410,24 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
 
     /* Store bc_info from bytecode for reference */
     mbpf_bytecode_check(prog->bytecode, prog->bytecode_len, &prog->bc_info);
+
+    /* Call mbpf_init() on all instances if defined.
+     * This happens after maps are created (when map subsystem is implemented)
+     * but before the program is available for running. */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        err = call_mbpf_init_on_instance(&prog->instances[i]);
+        if (err != MBPF_OK) {
+            /* mbpf_init failed - clean up and fail the load */
+            for (uint32_t j = 0; j < prog->instance_count; j++) {
+                free_instance(&prog->instances[j]);
+            }
+            free(prog->instances);
+            free(prog->bytecode);
+            mbpf_manifest_free(&prog->manifest);
+            free(prog);
+            return err;
+        }
+    }
 
     /* Add to runtime's program list */
     prog->next = rt->programs;

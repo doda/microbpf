@@ -52,3 +52,4 @@ instance-creation: reviewed and fixed per-CPU instance selection guard
 - 2025-12-24: Reviewed and validated MBPF_HOOK_SECURITY authorization hook with new security context tests.
 - 2025-12-24: Reviewed and validated MBPF_HOOK_CUSTOM support with custom context accessors and tests.
 entry-point-mbpf-prog: verified entry function required and called
+entry-point-mbpf-init: verified optional mbpf_init load-time entry

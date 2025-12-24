@@ -87,6 +87,7 @@ typedef enum {
     MBPF_ERR_ALREADY_UNLOADED   = -19,
     MBPF_ERR_ABI_MISMATCH       = -20,
     MBPF_ERR_MISSING_ENTRY      = -21,
+    MBPF_ERR_INIT_FAILED        = -22,
 } mbpf_error_t;
 
 /* Capabilities */

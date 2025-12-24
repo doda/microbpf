@@ -280,6 +280,16 @@ if [ -f build/test_hook_net_tx ]; then
     fi
 fi
 
+# Run mbpf_init entry point tests
+if [ -f build/test_mbpf_init ]; then
+    ./build/test_mbpf_init
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: mbpf_init entry point tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

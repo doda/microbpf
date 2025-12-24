@@ -340,7 +340,7 @@
       "Load program without mbpf_init - verify load succeeds",
       "Verify mbpf_init can access maps object"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "entry-point-mbpf-fini",
