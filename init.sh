@@ -220,6 +220,16 @@ if [ -f build/test_context_object ]; then
     fi
 fi
 
+# Run context read methods tests
+if [ -f build/test_context_read_methods ]; then
+    ./build/test_context_read_methods
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Context read methods tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

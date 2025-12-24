@@ -524,13 +524,13 @@ static mbpf_instance_t *select_instance(mbpf_program_t *prog) {
 
 /*
  * Create a NET_RX context object from ctx_blob.
- * Returns JS object with read-only ifindex, pkt_len, data_len, l2_proto properties.
+ * Returns JS object with read-only ifindex, pkt_len, data_len, l2_proto properties
+ * and readU8, readU16LE, readU32LE, readBytes methods.
  *
  * Properties are implemented as getter+empty setter pairs via Object.defineProperty,
  * so writes are silently ignored without throwing exceptions.
  *
- * The entire object is created in a single JS_Eval call to avoid reference
- * management issues with temporary globals.
+ * The read methods are pure JS implementations that operate on an internal data buffer.
  */
 static JSValue create_net_rx_ctx(JSContext *ctx, const void *ctx_blob, size_t ctx_len) {
     if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_net_rx_v1_t)) {
@@ -539,29 +539,165 @@ static JSValue create_net_rx_ctx(JSContext *ctx, const void *ctx_blob, size_t ct
 
     const mbpf_ctx_net_rx_v1_t *net_ctx = (const mbpf_ctx_net_rx_v1_t *)ctx_blob;
 
-    /* Build JS code to create a new object with read-only properties.
-     * Using getter+empty setter ensures writes are silently ignored.
-     * The IIFE returns the fully-constructed object. */
-    char code[1024];
-    snprintf(code, sizeof(code),
-        "(function(){"
-        "var o={};"
+    /* Determine if we have data to embed */
+    const uint8_t *data = net_ctx->data;
+    uint32_t data_len = net_ctx->data_len;
+    uint8_t *owned_data = NULL;
+
+    /* If no contiguous data but a read_fn is provided, snapshot via read_fn. */
+    if ((!data || data_len == 0) && net_ctx->read_fn && data_len > 0) {
+        owned_data = malloc(data_len);
+        if (!owned_data) {
+            return JS_NULL;
+        }
+
+        int read_rc = net_ctx->read_fn(ctx_blob, 0, data_len, owned_data);
+        if (read_rc <= 0) {
+            free(owned_data);
+            owned_data = NULL;
+            data = NULL;
+            data_len = 0;
+        } else {
+            data = owned_data;
+            if ((uint32_t)read_rc < data_len) {
+                data_len = (uint32_t)read_rc;
+            }
+        }
+    }
+
+    /* Build JS code to create a new object.
+     * If data is available, we create a Uint8Array with the data embedded
+     * and add read methods that operate on it. */
+
+    /* Calculate buffer size needed:
+     * - Base JS code: ~2000 bytes
+     * - Data as hex: data_len * 4 bytes (for "0xXX," format)
+     * - Safety margin: 512 bytes
+     */
+    size_t code_size = 2512;
+    if (data && data_len > 0) {
+        code_size += data_len * 5;  /* "0xXX," = 5 chars per byte */
+    }
+
+    char *code = malloc(code_size);
+    if (!code) {
+        free(owned_data);
+        return JS_NULL;
+    }
+
+    char *p = code;
+    size_t remaining = code_size;
+    int written;
+
+    /* Start the IIFE */
+    written = snprintf(p, remaining, "(function(){var o={};");
+    p += written;
+    remaining -= written;
+
+    /* Add read-only scalar properties */
+    written = snprintf(p, remaining,
         "Object.defineProperty(o,'ifindex',{get:function(){return %u;},set:function(){}});"
         "Object.defineProperty(o,'pkt_len',{get:function(){return %u;},set:function(){}});"
         "Object.defineProperty(o,'data_len',{get:function(){return %u;},set:function(){}});"
-        "Object.defineProperty(o,'l2_proto',{get:function(){return %u;},set:function(){}});"
-        "return o;"
-        "})()",
+        "Object.defineProperty(o,'l2_proto',{get:function(){return %u;},set:function(){}});",
         net_ctx->ifindex,
         net_ctx->pkt_len,
         net_ctx->data_len,
         (uint32_t)net_ctx->l2_proto);
+    p += written;
+    remaining -= written;
+
+    /* Add data buffer and read methods if data is available */
+    if (data && data_len > 0) {
+        /* Create internal data array */
+        written = snprintf(p, remaining, "var d=new Uint8Array([");
+        p += written;
+        remaining -= written;
+
+        for (uint32_t i = 0; i < data_len; i++) {
+            if (i > 0) {
+                *p++ = ',';
+                remaining--;
+            }
+            written = snprintf(p, remaining, "%u", data[i]);
+            p += written;
+            remaining -= written;
+        }
+
+        written = snprintf(p, remaining, "]);");
+        p += written;
+        remaining -= written;
+
+        /* Add readU8 method */
+        written = snprintf(p, remaining,
+            "o.readU8=function(off){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(off>=d.length)throw new RangeError('offset out of bounds');"
+            "return d[off];"
+            "};");
+        p += written;
+        remaining -= written;
+
+        /* Add readU16LE method */
+        written = snprintf(p, remaining,
+            "o.readU16LE=function(off){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(off+2>d.length)throw new RangeError('offset out of bounds');"
+            "return d[off]|(d[off+1]<<8);"
+            "};");
+        p += written;
+        remaining -= written;
+
+        /* Add readU32LE method */
+        written = snprintf(p, remaining,
+            "o.readU32LE=function(off){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(off+4>d.length)throw new RangeError('offset out of bounds');"
+            "return (d[off]|(d[off+1]<<8)|(d[off+2]<<16)|(d[off+3]<<24))>>>0;"
+            "};");
+        p += written;
+        remaining -= written;
+
+        /* Add readBytes method */
+        written = snprintf(p, remaining,
+            "o.readBytes=function(off,len,buf){"
+            "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+            "if(typeof len!=='number')throw new TypeError('length must be a number');"
+            "if(!(buf instanceof Uint8Array))throw new TypeError('outBuffer must be a Uint8Array');"
+            "if(off<0)throw new RangeError('offset must be non-negative');"
+            "if(len<0)throw new RangeError('length must be non-negative');"
+            "if(off>=d.length)throw new RangeError('offset out of bounds');"
+            "var n=len;if(off+n>d.length)n=d.length-off;if(n>buf.length)n=buf.length;"
+            "for(var i=0;i<n;i++)buf[i]=d[off+i];"
+            "return n;"
+            "};");
+        p += written;
+        remaining -= written;
+    } else {
+        /* No data available - add methods that always throw */
+        written = snprintf(p, remaining,
+            "o.readU8=function(){throw new RangeError('no data available');};"
+            "o.readU16LE=function(){throw new RangeError('no data available');};"
+            "o.readU32LE=function(){throw new RangeError('no data available');};"
+            "o.readBytes=function(){throw new RangeError('no data available');};");
+        p += written;
+        remaining -= written;
+    }
+
+    /* Close the IIFE and return the object */
+    written = snprintf(p, remaining, "return o;})()");
+    p += written;
 
     JSValue result = JS_Eval(ctx, code, strlen(code), "<ctx>", JS_EVAL_RETVAL);
+    free(code);
+    free(owned_data);
+
     if (JS_IsException(result)) {
-        /* Clear exception to prevent it from propagating */
         JSValue ex = JS_GetException(ctx);
-        (void)ex;  /* Discard the exception value */
+        (void)ex;
         return JS_NULL;
     }
 

@@ -226,7 +226,7 @@
       "Verify out-of-bounds reads throw exceptions",
       "Verify type errors thrown for invalid arguments"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "context-net-rx-v1",
