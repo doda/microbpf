@@ -320,6 +320,26 @@ if [ -f build/test_array_map ]; then
     fi
 fi
 
+# Run hash map tests
+if [ -f build/test_hash_map ]; then
+    ./build/test_hash_map
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Hash map tests failed"
+        exit 1
+    fi
+fi
+
+# Run map max entries tests
+if [ -f build/test_map_max_entries ]; then
+    ./build/test_map_max_entries
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Map max entries tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

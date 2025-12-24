@@ -430,7 +430,7 @@
       "Attempt to insert 6th entry - verify appropriate behavior (reject or LRU)",
       "Verify existing entries remain intact"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-type-validation",
