@@ -714,7 +714,7 @@
       "Verify CAP_TIME gates mbpf.nowNs",
       "Verify CAP_STATS gates mbpf.stats"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "nested-execution-prevention",
