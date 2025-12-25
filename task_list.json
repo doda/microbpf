@@ -651,7 +651,7 @@
       "Run slow program (busy loop) - verify aborted within time limit",
       "Verify timing overhead is acceptable"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "budget-interrupt-handler",

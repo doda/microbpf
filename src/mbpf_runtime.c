@@ -177,6 +177,9 @@ struct mbpf_instance {
     volatile int budget_exceeded; /* Flag set when budget is exceeded */
     /* Helper budget tracking for max_helpers enforcement */
     uint32_t max_helpers;       /* Maximum helper calls allowed per invocation */
+    /* Wall time budget tracking for max_wall_time_us enforcement */
+    uint32_t max_wall_time_us;  /* Maximum wall time allowed per invocation in microseconds */
+    struct timespec start_time; /* Start time of current invocation */
 };
 
 /* Internal structures */
@@ -226,7 +229,7 @@ static void default_log_fn(int level, const char *msg) {
 }
 
 /*
- * Interrupt handler for step budget enforcement.
+ * Interrupt handler for step and wall time budget enforcement.
  * Called by MQuickJS periodically during execution.
  * Returns non-zero to abort execution when budget is exceeded.
  */
@@ -237,20 +240,44 @@ static int mbpf_interrupt_handler(JSContext *ctx, void *opaque) {
         return 0;  /* No instance context, continue execution */
     }
 
-    /* If max_steps is 0, no budget enforcement */
-    if (inst->max_steps == 0) {
-        return 0;
+    /* Check step budget */
+    if (inst->max_steps > 0) {
+        if (inst->steps_remaining > 0) {
+            inst->steps_remaining--;
+        } else {
+            /* Step budget exceeded - set flag and abort */
+            inst->budget_exceeded = 1;
+            return 1;
+        }
     }
 
-    /* Decrement steps remaining and check if exceeded */
-    if (inst->steps_remaining > 0) {
-        inst->steps_remaining--;
-        return 0;  /* Continue execution */
+    /* Check wall time budget */
+    if (inst->max_wall_time_us > 0) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+
+        /* Calculate elapsed time in microseconds with borrow handling */
+        int64_t sec = (int64_t)now.tv_sec - (int64_t)inst->start_time.tv_sec;
+        int64_t nsec = (int64_t)now.tv_nsec - (int64_t)inst->start_time.tv_nsec;
+        if (nsec < 0) {
+            sec--;
+            nsec += 1000000000LL;
+        }
+        if (sec < 0) {
+            sec = 0;
+            nsec = 0;
+        }
+        uint64_t elapsed_us =
+            (uint64_t)sec * 1000000ULL + (uint64_t)(nsec / 1000LL);
+
+        if (elapsed_us >= inst->max_wall_time_us) {
+            /* Wall time budget exceeded - set flag and abort */
+            inst->budget_exceeded = 1;
+            return 1;
+        }
     }
 
-    /* Budget exceeded - set flag and abort */
-    inst->budget_exceeded = 1;
-    return 1;  /* Non-zero aborts execution */
+    return 0;  /* Continue execution */
 }
 
 /*
@@ -2659,6 +2686,13 @@ static int create_instance(mbpf_program_t *prog, uint32_t idx, size_t heap_size,
     }
     inst->max_helpers = max_helpers;
 
+    /* Wall time budget is only enforced during mbpf_run, not during init.
+     * We store the configured value but set max_wall_time_us to 0 during
+     * instance creation to avoid timing out during setup JS_Eval calls.
+     * The actual value will be applied later before the first run. */
+    inst->max_wall_time_us = 0;  /* Disabled during init */
+    memset(&inst->start_time, 0, sizeof(inst->start_time));
+
     /* Each instance needs its own copy of bytecode for relocation.
      * The bytecode must be kept alive as long as the context exists
      * because JS_LoadBytecode keeps a reference to it. */
@@ -4875,6 +4909,13 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     /* Reset step budget for this invocation */
     inst->steps_remaining = inst->max_steps;
     inst->budget_exceeded = 0;
+
+    /* Set up wall time budget from manifest and record start time.
+     * Wall time budget is only enforced during mbpf_run, not during init. */
+    inst->max_wall_time_us = prog->manifest.budgets.max_wall_time_us;
+    if (inst->max_wall_time_us > 0) {
+        clock_gettime(CLOCK_MONOTONIC, &inst->start_time);
+    }
 
     /* Set up log context for mbpf.log helper */
     mbpf_set_log_context((void *)prog->runtime->config.log_fn,
