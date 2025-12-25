@@ -44,6 +44,28 @@ typedef struct mbpf_hash_map {
 } mbpf_hash_map_t;
 
 /*
+ * Runtime LRU hash map storage.
+ * Uses open addressing with linear probing like hash map, but adds
+ * LRU tracking via a doubly-linked list threaded through entries.
+ * When at capacity, the least recently used entry is evicted on insert.
+ *
+ * Bucket layout: [valid:1][prev:4][next:4][key:key_size][value:value_size]
+ * - valid: 0=empty, 1=valid, 2=deleted (tombstone)
+ * - prev/next: 4-byte indices for LRU doubly-linked list (0xFFFFFFFF = null)
+ *
+ * The LRU list has head (most recently used) and tail (least recently used).
+ */
+typedef struct mbpf_lru_hash_map {
+    uint32_t max_entries;       /* Maximum number of entries */
+    uint32_t key_size;          /* Size of each key in bytes */
+    uint32_t value_size;        /* Size of each value in bytes */
+    uint32_t count;             /* Current number of entries */
+    uint32_t lru_head;          /* Index of most recently used (head of list) */
+    uint32_t lru_tail;          /* Index of least recently used (tail of list) */
+    uint8_t *buckets;           /* Bucket array: max_entries * (1 + 4 + 4 + key_size + value_size) bytes */
+} mbpf_lru_hash_map_t;
+
+/*
  * Generic map storage container.
  */
 typedef struct mbpf_map_storage {
@@ -52,6 +74,7 @@ typedef struct mbpf_map_storage {
     union {
         mbpf_array_map_t array;
         mbpf_hash_map_t hash;
+        mbpf_lru_hash_map_t lru_hash;
     } u;
 } mbpf_map_storage_t;
 
@@ -171,6 +194,22 @@ static int create_maps_from_manifest(mbpf_program_t *prog) {
             if (!hash->buckets) {
                 goto cleanup;
             }
+        } else if (def->type == MBPF_MAP_TYPE_LRU) {
+            mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
+            lru->max_entries = def->max_entries;
+            lru->key_size = def->key_size;
+            lru->value_size = def->value_size;
+            lru->count = 0;
+            lru->lru_head = 0xFFFFFFFF;  /* null */
+            lru->lru_tail = 0xFFFFFFFF;  /* null */
+
+            /* Allocate bucket storage: each bucket is [valid:1][prev:4][next:4][key][value] */
+            size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
+            size_t buckets_size = (size_t)lru->max_entries * bucket_size;
+            lru->buckets = calloc(buckets_size, 1);
+            if (!lru->buckets) {
+                goto cleanup;
+            }
         }
     }
 
@@ -185,6 +224,8 @@ cleanup:
             free(storage->u.array.valid);
         } else if (storage->type == MBPF_MAP_TYPE_HASH) {
             free(storage->u.hash.buckets);
+        } else if (storage->type == MBPF_MAP_TYPE_LRU) {
+            free(storage->u.lru_hash.buckets);
         }
     }
     free(prog->maps);
@@ -206,6 +247,8 @@ static void free_maps(mbpf_program_t *prog) {
             free(storage->u.array.valid);
         } else if (storage->type == MBPF_MAP_TYPE_HASH) {
             free(storage->u.hash.buckets);
+        } else if (storage->type == MBPF_MAP_TYPE_LRU) {
+            free(storage->u.lru_hash.buckets);
         }
     }
     free(prog->maps);
@@ -229,7 +272,12 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog) {
     /* First, estimate buffer size needed */
     size_t code_size = 4096;  /* Base size for boilerplate */
     for (uint32_t i = 0; i < prog->map_count; i++) {
-        code_size += 4096;  /* ~4KB per map for methods (hash maps need more) */
+        mbpf_map_storage_t *storage = &prog->maps[i];
+        if (storage->type == MBPF_MAP_TYPE_LRU) {
+            code_size += 8192;  /* LRU hash maps need ~8KB for LRU list methods */
+        } else {
+            code_size += 4096;  /* ~4KB per map for methods (hash maps need more) */
+        }
     }
 
     char *code = malloc(code_size);
@@ -416,6 +464,207 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog) {
                 hash->max_entries,
                 hash->key_size,
                 hash->value_size,
+                (uint32_t)bucket_size);
+            p += written;
+            remaining -= written;
+        } else if (storage->type == MBPF_MAP_TYPE_LRU) {
+            mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
+
+            /* LRU hash map bucket layout: [valid:1][prev:4][next:4][key][value]
+             * prev/next are bucket indices for doubly-linked LRU list.
+             * 0xFFFFFFFF (stored as 4 bytes) represents null pointer.
+             * The list maintains MRU at head, LRU at tail.
+             * On lookup: move accessed entry to head (refresh LRU).
+             * On insert when full: evict tail (LRU entry), then insert new entry at head.
+             */
+            size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
+            size_t total_bytes = (size_t)lru->max_entries * bucket_size;
+
+            written = snprintf(p, remaining,
+                "_mapData[%u]=new Uint8Array(%zu);"
+                "_mapValid[%u]={count:0,head:0xFFFFFFFF,tail:0xFFFFFFFF};",
+                i, total_bytes, i);
+            p += written;
+            remaining -= written;
+
+            /* Create LRU hash map object with lookup, update, and delete methods.
+             * LRU functionality:
+             * - lookup: finds entry and moves it to head (refreshes LRU order)
+             * - update: inserts/updates entry and moves to head; evicts tail if at capacity
+             * - delete: removes entry from hash table and LRU list
+             */
+            written = snprintf(p, remaining,
+                "maps['%s']=(function(){"
+                "var d=_mapData[%u];"
+                "var m=_mapValid[%u];"
+                "var maxE=%u;"
+                "var kS=%u;"
+                "var vS=%u;"
+                "var bS=%u;"  /* bucket_size = 1 + 4 + 4 + key_size + value_size */
+                "var NULL_IDX=0xFFFFFFFF;"
+                /* FNV-1a hash function for Uint8Array keys */
+                "function fnv(k){"
+                    "var h=2166136261>>>0;"
+                    "for(var i=0;i<kS;i++){"
+                        "h^=k[i];"
+                        "h=Math.imul(h,16777619)>>>0;"
+                    "}"
+                    "return h;"
+                "}"
+                /* Read 4-byte little-endian uint32 at offset */
+                "function r32(off){"
+                    "return (d[off]|(d[off+1]<<8)|(d[off+2]<<16)|(d[off+3]<<24))>>>0;"
+                "}"
+                /* Write 4-byte little-endian uint32 at offset */
+                "function w32(off,v){"
+                    "d[off]=v&0xFF;"
+                    "d[off+1]=(v>>8)&0xFF;"
+                    "d[off+2]=(v>>16)&0xFF;"
+                    "d[off+3]=(v>>24)&0xFF;"
+                "}"
+                /* Get prev index for bucket at off */
+                "function gP(off){return r32(off+1);}"
+                /* Get next index for bucket at off */
+                "function gN(off){return r32(off+5);}"
+                /* Set prev index for bucket at off */
+                "function sP(off,v){w32(off+1,v);}"
+                /* Set next index for bucket at off */
+                "function sN(off,v){w32(off+5,v);}"
+                /* Compare key at bucket offset with provided key */
+                "function keq(off,k){"
+                    "for(var i=0;i<kS;i++){"
+                        "if(d[off+9+i]!==k[i])return false;"
+                    "}"
+                    "return true;"
+                "}"
+                /* Remove entry at bucket index from LRU list (does not clear valid flag) */
+                "function lruRemove(idx){"
+                    "var off=idx*bS;"
+                    "var pr=gP(off);"
+                    "var nx=gN(off);"
+                    "if(pr!==NULL_IDX){sN(pr*bS,nx);}else{m.head=nx;}"
+                    "if(nx!==NULL_IDX){sP(nx*bS,pr);}else{m.tail=pr;}"
+                "}"
+                /* Add entry at bucket index to head of LRU list */
+                "function lruAddHead(idx){"
+                    "var off=idx*bS;"
+                    "sP(off,NULL_IDX);"
+                    "sN(off,m.head);"
+                    "if(m.head!==NULL_IDX){sP(m.head*bS,idx);}"
+                    "m.head=idx;"
+                    "if(m.tail===NULL_IDX){m.tail=idx;}"
+                "}"
+                /* Move entry at bucket index to head (refresh LRU) */
+                "function lruTouch(idx){"
+                    "if(m.head===idx)return;"
+                    "lruRemove(idx);"
+                    "lruAddHead(idx);"
+                "}"
+                /* Evict tail (LRU) entry, returns the bucket index */
+                "function lruEvictTail(){"
+                    "var idx=m.tail;"
+                    "if(idx===NULL_IDX)return NULL_IDX;"
+                    "lruRemove(idx);"
+                    "var off=idx*bS;"
+                    "d[off]=2;"  /* Mark as tombstone */
+                    "m.count--;"
+                    "return idx;"
+                "}"
+                "return{"
+                /* lookup(keyBuffer, outBuffer) - returns true if found, copies value to outBuffer */
+                "lookup:function(keyBuf,outBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
+                    "if(outBuf.length<vS)throw new RangeError('outBuffer too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0)return false;"  /* Empty slot - not found */
+                        "if(d[off]===1&&keq(off,keyBuf)){"  /* Valid entry with matching key */
+                            "for(var j=0;j<vS;j++)outBuf[j]=d[off+9+kS+j];"
+                            "lruTouch(idx);"  /* Move to head (most recently used) */
+                            "return true;"
+                        "}"
+                        /* d[off]===2 means deleted, keep probing */
+                    "}"
+                    "return false;"
+                "},"
+                /* update(keyBuffer, valueBuffer) - inserts or updates, returns true on success */
+                "update:function(keyBuf,valueBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "if(!(valueBuf instanceof Uint8Array))throw new TypeError('value must be Uint8Array');"
+                    "if(valueBuf.length<vS)throw new RangeError('value too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "var firstDel=-1;"
+                    /* Look for existing key, or empty/deleted slot to insert */
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0){"  /* Empty slot - insert here */
+                            "if(firstDel>=0){off=firstDel;idx=Math.floor(firstDel/bS);}"
+                            "d[off]=1;"  /* Mark valid */
+                            "for(var j=0;j<kS;j++)d[off+9+j]=keyBuf[j];"
+                            "for(var j=0;j<vS;j++)d[off+9+kS+j]=valueBuf[j];"
+                            "m.count++;"
+                            "lruAddHead(idx);"
+                            "return true;"
+                        "}"
+                        "if(d[off]===2&&firstDel<0)firstDel=off;"  /* Remember first deleted slot */
+                        "if(d[off]===1&&keq(off,keyBuf)){"  /* Existing key - update value */
+                            "for(var j=0;j<vS;j++)d[off+9+kS+j]=valueBuf[j];"
+                            "lruTouch(idx);"  /* Move to head */
+                            "return true;"
+                        "}"
+                    "}"
+                    /* Searched all slots. Use firstDel if found */
+                    "if(firstDel>=0){"
+                        "var idx=Math.floor(firstDel/bS);"
+                        "d[firstDel]=1;"
+                        "for(var j=0;j<kS;j++)d[firstDel+9+j]=keyBuf[j];"
+                        "for(var j=0;j<vS;j++)d[firstDel+9+kS+j]=valueBuf[j];"
+                        "m.count++;"
+                        "lruAddHead(idx);"
+                        "return true;"
+                    "}"
+                    /* Table full with no empty slots: evict LRU and reuse its slot */
+                    "var evicted=lruEvictTail();"
+                    "if(evicted===NULL_IDX)return false;"
+                    "var off=evicted*bS;"
+                    "d[off]=1;"
+                    "for(var j=0;j<kS;j++)d[off+9+j]=keyBuf[j];"
+                    "for(var j=0;j<vS;j++)d[off+9+kS+j]=valueBuf[j];"
+                    "m.count++;"
+                    "lruAddHead(evicted);"
+                    "return true;"
+                "},"
+                /* delete(keyBuffer) - removes entry, returns true if found */
+                "delete:function(keyBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0)return false;"  /* Empty slot - not found */
+                        "if(d[off]===1&&keq(off,keyBuf)){"  /* Found it */
+                            "lruRemove(idx);"  /* Remove from LRU list */
+                            "d[off]=2;"  /* Mark as deleted (tombstone) */
+                            "m.count--;"
+                            "return true;"
+                        "}"
+                    "}"
+                    "return false;"
+                "}"
+                "};"
+                "})();",
+                storage->name,
+                i, i,
+                lru->max_entries,
+                lru->key_size,
+                lru->value_size,
                 (uint32_t)bucket_size);
             p += written;
             remaining -= written;

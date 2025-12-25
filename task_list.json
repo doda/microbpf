@@ -455,7 +455,7 @@
       "Access entries to update LRU order",
       "Verify most recently accessed entries are retained"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-per-cpu",
