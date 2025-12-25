@@ -1027,7 +1027,7 @@
       "Store to buffer and verify little-endian encoding",
       "Load from buffer and verify reconstruction"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "rom-resident-stdlib",
