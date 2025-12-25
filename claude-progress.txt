@@ -93,3 +93,4 @@ budget-max-wall-time: reviewed and fixed wall time elapsed calculation
 2025-12-25 gc-reference-handling: reviewed JSGCRef registration, cleanup, and GC stress tests.
 2025-12-25 deferred-execution-queue: reviewed deferred execution queue and fixed tracepoint read_fn snapshotting.
 2025-12-25 deferred-execution-backpressure: reviewed deferred queue backpressure handling, stats updates, and tests.
+2025-12-25 deferred-context-snapshot: reviewed deferred context snapshot tests and queue behavior.

@@ -846,7 +846,7 @@
       "Verify worker sees correct snapshotted buffer data",
       "Verify TRUNCATED flag set if data was truncated"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "global-mbpf-object",
