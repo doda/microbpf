@@ -70,3 +70,4 @@ exception-handling: reviewed exception defaults and tests
 - 2025-12-24: Completed map-concurrency review with concurrency tests and build integration.
 - 2025-12-24: Completed helper-api-version review with mbpf.apiVersion support and tests.
 - 2025-12-24: Completed helper-log review with mbpf.log helper and tests.
+- 2025-12-24: Completed helper-u64-load-store review with mbpf.u64LoadLE/u64StoreLE helpers and tests.

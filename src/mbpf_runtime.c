@@ -490,10 +490,11 @@ static void free_maps(mbpf_program_t *prog) {
  * The log function uses console.log internally but adds level prefix.
  */
 static int setup_mbpf_object(JSContext *ctx) {
-    /* Build JS code to create mbpf object with apiVersion and log function.
+    /* Build JS code to create mbpf object with apiVersion, log, and u64 helpers.
      * The log function prepends the level prefix and calls console.log,
-     * which maps to js_print in mbpf_stdlib.c where the actual logging happens. */
-    char code[512];
+     * which maps to js_print in mbpf_stdlib.c where the actual logging happens.
+     * u64LoadLE/u64StoreLE handle 64-bit values as [lo, hi] pairs in LE format. */
+    char code[2048];
     uint32_t api_version = MBPF_API_VERSION;
     snprintf(code, sizeof(code),
         "(function(){"
@@ -506,6 +507,26 @@ static int setup_mbpf_object(JSContext *ctx) {
             "if(level>3)level=3;"
             "if(msg===undefined)msg='';"
             "console.log('['+levelNames[level]+'] '+String(msg));"
+        "},"
+        "u64LoadLE:function(bytes,offset,out){"
+            "if(!(bytes instanceof Uint8Array))throw new TypeError('bytes must be Uint8Array');"
+            "if(typeof offset!=='number')throw new TypeError('offset must be number');"
+            "if(!Array.isArray(out)||out.length<2)throw new TypeError('out must be array of length 2');"
+            "if(offset<0||offset+8>bytes.length)throw new RangeError('offset out of bounds');"
+            "var lo=(bytes[offset]|(bytes[offset+1]<<8)|(bytes[offset+2]<<16)|(bytes[offset+3]<<24))>>>0;"
+            "var hi=(bytes[offset+4]|(bytes[offset+5]<<8)|(bytes[offset+6]<<16)|(bytes[offset+7]<<24))>>>0;"
+            "out[0]=lo;out[1]=hi;"
+        "},"
+        "u64StoreLE:function(bytes,offset,value){"
+            "if(!(bytes instanceof Uint8Array))throw new TypeError('bytes must be Uint8Array');"
+            "if(typeof offset!=='number')throw new TypeError('offset must be number');"
+            "if(!Array.isArray(value)||value.length<2)throw new TypeError('value must be array of length 2');"
+            "if(offset<0||offset+8>bytes.length)throw new RangeError('offset out of bounds');"
+            "var lo=value[0]>>>0,hi=value[1]>>>0;"
+            "bytes[offset]=lo&0xFF;bytes[offset+1]=(lo>>8)&0xFF;"
+            "bytes[offset+2]=(lo>>16)&0xFF;bytes[offset+3]=(lo>>24)&0xFF;"
+            "bytes[offset+4]=hi&0xFF;bytes[offset+5]=(hi>>8)&0xFF;"
+            "bytes[offset+6]=(hi>>16)&0xFF;bytes[offset+7]=(hi>>24)&0xFF;"
         "}"
         "};"
         "})()",

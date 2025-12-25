@@ -567,7 +567,7 @@
       "Verify little-endian byte order",
       "Verify type/bounds errors throw"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "helper-now-ns",
