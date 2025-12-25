@@ -103,3 +103,4 @@ disallowed-globals: disabled Function/eval globals and added security tests.
 toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL section data.
 2025-12-25 toolchain-signing: reviewed Ed25519 signing toolchain, tests, and verification flow.
 2025-12-25 observability-counters: reviewed per-program statistics counters.
+2025-12-25 observability-trace-logs: reviewed trace logging with rate limiting.

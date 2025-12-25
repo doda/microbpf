@@ -151,6 +151,9 @@ typedef struct mbpf_runtime_config {
     /* Circuit breaker configuration (optional, 0 = disabled) */
     uint32_t circuit_breaker_threshold;   /* Consecutive failures before tripping (0 = disabled) */
     uint32_t circuit_breaker_cooldown_us; /* Cooldown period in microseconds before retry */
+    /* Trace logging configuration (optional, all 0 = disabled) */
+    bool trace_enabled;                   /* Enable trace logging for runtime events */
+    uint32_t trace_rate_limit_per_sec;    /* Max trace messages per second (0 = unlimited) */
 } mbpf_runtime_config_t;
 
 /* Load options */

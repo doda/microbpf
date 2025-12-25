@@ -967,7 +967,7 @@
       "Trigger many events and verify rate limiting kicks in",
       "Verify rate limit is configurable"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "observability-debug-symbols",

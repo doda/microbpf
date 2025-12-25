@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <sched.h>
 #include <unistd.h>
 #include <time.h>
@@ -275,6 +276,9 @@ struct mbpf_runtime {
     size_t program_count;
     uint32_t num_instances;     /* Number of instances per program */
     bool initialized;
+    /* Trace logging rate limiter state */
+    uint64_t trace_count_current_sec;  /* Messages emitted in current second */
+    struct timespec trace_window_start; /* Start of current rate limit window */
 };
 
 struct mbpf_program {
@@ -317,6 +321,52 @@ static void default_log_fn(int level, const char *msg) {
         case 3: level_str = "ERROR"; break;
     }
     fprintf(stderr, "[mbpf %s] %s\n", level_str, msg);
+}
+
+/*
+ * Trace logging with rate limiting.
+ * Emits trace messages through the configured log_fn when trace_enabled is true.
+ * Rate limiting is enforced per second if trace_rate_limit_per_sec > 0.
+ * Returns true if the message was emitted, false if rate-limited.
+ */
+static bool mbpf_trace_log(mbpf_runtime_t *rt, const char *fmt, ...) {
+    if (!rt || !rt->config.trace_enabled || !rt->config.log_fn) {
+        return false;
+    }
+
+    /* Check rate limiting if configured */
+    if (rt->config.trace_rate_limit_per_sec > 0) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+
+        /* Check if we're in a new second window */
+        if (now.tv_sec != rt->trace_window_start.tv_sec) {
+            /* New window - reset counter */
+            rt->trace_window_start = now;
+            rt->trace_count_current_sec = 0;
+        }
+
+        /* Check if we've exceeded the rate limit */
+        if (rt->trace_count_current_sec >= rt->config.trace_rate_limit_per_sec) {
+            return false;  /* Rate limited */
+        }
+
+        rt->trace_count_current_sec++;
+    }
+
+    /* Format and emit the trace message */
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    /* Emit as DEBUG level (0) with TRACE prefix */
+    char trace_buf[544];
+    snprintf(trace_buf, sizeof(trace_buf), "[TRACE] %s", buf);
+    rt->config.log_fn(0, trace_buf);
+
+    return true;
 }
 
 /*
@@ -3419,6 +3469,12 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     rt->programs = prog;
     rt->program_count++;
 
+    /* Trace: program loaded */
+    mbpf_trace_log(rt, "program_load: prog=%s version=%s hook_type=%d",
+                   prog->manifest.program_name,
+                   prog->manifest.program_version,
+                   prog->manifest.hook_type);
+
     *out_prog = prog;
     return MBPF_OK;
 }
@@ -3482,6 +3538,9 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
     if (prog->unloaded) {
         return MBPF_ERR_ALREADY_UNLOADED;
     }
+
+    /* Trace: program unload starting */
+    mbpf_trace_log(rt, "program_unload: prog=%s", prog->manifest.program_name);
 
     /* Mark as unloaded immediately to prevent double-unload */
     prog->unloaded = true;
@@ -4389,6 +4448,10 @@ int mbpf_program_attach(mbpf_runtime_t *rt, mbpf_program_t *prog,
     prog->attached_hook = hook;
     prog->attached = true;
 
+    /* Trace: program attached */
+    mbpf_trace_log(rt, "program_attach: prog=%s hook=%u",
+                   prog->manifest.program_name, hook);
+
     return MBPF_OK;
 }
 
@@ -4409,6 +4472,10 @@ int mbpf_program_detach(mbpf_runtime_t *rt, mbpf_program_t *prog,
 
     prog->attached = false;
     prog->attached_hook = 0;
+
+    /* Trace: program detached */
+    mbpf_trace_log(rt, "program_detach: prog=%s hook=%u",
+                   prog->manifest.program_name, hook);
 
     return MBPF_OK;
 }
@@ -5356,6 +5423,10 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_ERR_INVALID_ARG;
     }
 
+    /* Trace: program execution starting */
+    mbpf_trace_log(prog->runtime, "run_on_instance: prog=%s hook=%u ctx_len=%zu",
+                   prog->manifest.program_name, hook, ctx_len);
+
     /* Get the exception default for this hook type */
     int32_t exception_default = get_exception_default(
         prog->runtime, (mbpf_hook_type_t)hook);
@@ -5366,6 +5437,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
                                       0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
         prog->stats.nested_dropped++;
         *out_rc = exception_default;
+        mbpf_trace_log(prog->runtime, "run_on_instance: nested execution blocked");
         return MBPF_ERR_NESTED_EXEC;
     }
 
@@ -5642,6 +5714,8 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
             prog->stats.oom_errors++;
             circuit_breaker_record_failure(prog);
             *out_rc = exception_default;
+            mbpf_trace_log(prog->runtime, "run_on_instance: OOM error prog=%s",
+                           prog->manifest.program_name);
             mbpf_clear_log_context();
             __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
             return MBPF_OK;
@@ -5657,8 +5731,12 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         }
         if (inst->budget_exceeded || helper_budget_exceeded) {
             prog->stats.budget_exceeded++;
+            mbpf_trace_log(prog->runtime, "run_on_instance: budget exceeded prog=%s",
+                           prog->manifest.program_name);
         } else {
             prog->stats.exceptions++;
+            mbpf_trace_log(prog->runtime, "run_on_instance: exception prog=%s",
+                           prog->manifest.program_name);
         }
         circuit_breaker_record_failure(prog);
         *out_rc = exception_default;
@@ -5700,6 +5778,10 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
 
     prog->stats.successes++;
     circuit_breaker_record_success(prog);
+
+    /* Trace: successful execution */
+    mbpf_trace_log(prog->runtime, "run_on_instance: success prog=%s rc=%d",
+                   prog->manifest.program_name, *out_rc);
 
     /* Sync ring buffer state from JS to C storage.
      * This allows host-side APIs to read events written by the program. */
