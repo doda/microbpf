@@ -714,13 +714,13 @@ static void free_emit_buffer(mbpf_program_t *prog) {
  * - emit(eventId, bytes): Emit an event to the event buffer (requires CAP_EMIT)
  *
  * Log levels: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
- * The log function uses console.log internally but adds level prefix.
+ * The log function uses print internally but adds level prefix.
  */
 static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
     /* Build JS code to create mbpf object with apiVersion, log, u64 helpers,
      * and optionally nowNs if CAP_TIME is granted, emit if CAP_EMIT is granted,
      * stats if CAP_STATS is granted.
-     * The log function prepends the level prefix and calls console.log,
+     * The log function prepends the level prefix and calls print,
      * which maps to js_print in mbpf_stdlib.c where the actual logging happens.
      * u64LoadLE/u64StoreLE handle 64-bit values as [lo, hi] pairs in LE format.
      * nowNs reads from _mbpf_time_ns which is updated by the runtime before each run.
@@ -799,7 +799,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
                 "if(level<0)level=0;"
                 "if(level>3)level=3;"
                 "if(msg===undefined)msg='';"
-                "console.log('['+levelNames[level]+'] '+String(msg));"
+                "print('['+levelNames[level]+'] '+String(msg));"
             "},"
             : "",
         has_cap_time ?
@@ -2896,6 +2896,16 @@ static int create_instance(mbpf_program_t *prog, uint32_t idx, size_t heap_size,
 
     /* Set up interrupt handler for step budget enforcement */
     JS_SetInterruptHandler(inst->js_ctx, mbpf_interrupt_handler);
+
+    /* In non-debug mode, disable console.log by setting console to undefined.
+     * The spec says: "console.log mapped to mbpf.log() in debug builds only."
+     * This ensures programs can only use mbpf.log in production mode. */
+    if (prog->runtime && !prog->runtime->config.debug_mode) {
+        JSValue global = JS_GetGlobalObject(inst->js_ctx);
+        if (!JS_IsUndefined(global) && !JS_IsException(global)) {
+            JS_SetPropertyStr(inst->js_ctx, global, "console", JS_UNDEFINED);
+        }
+    }
 
     /* Initialize step budget from manifest */
     uint32_t max_steps = prog->manifest.budgets.max_steps;

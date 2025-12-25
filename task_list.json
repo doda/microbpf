@@ -883,7 +883,7 @@
       "Verify output appears (mapped to mbpf.log)",
       "Disable debug mode and verify console.log unavailable"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "disallowed-globals",
