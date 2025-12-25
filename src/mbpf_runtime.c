@@ -17,6 +17,10 @@
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
 extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
 
+/* Log context functions (defined in mbpf_stdlib.c) */
+extern void mbpf_set_log_context(void *log_fn, int debug_mode);
+extern void mbpf_clear_log_context(void);
+
 /* Forward declarations for static functions used across the file */
 struct mbpf_instance;
 static void call_mbpf_fini_on_instance(struct mbpf_instance *inst);
@@ -480,15 +484,29 @@ static void free_maps(mbpf_program_t *prog) {
  * Create the 'mbpf' global object for a JS context.
  * This object provides helper functions and properties:
  * - apiVersion: Runtime API version encoded as (major << 16) | minor
+ * - log(level, msg): Logging helper that maps to runtime log callback
+ *
+ * Log levels: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+ * The log function uses console.log internally but adds level prefix.
  */
 static int setup_mbpf_object(JSContext *ctx) {
-    /* Build JS code to create mbpf object with apiVersion property */
-    char code[256];
+    /* Build JS code to create mbpf object with apiVersion and log function.
+     * The log function prepends the level prefix and calls console.log,
+     * which maps to js_print in mbpf_stdlib.c where the actual logging happens. */
+    char code[512];
     uint32_t api_version = MBPF_API_VERSION;
     snprintf(code, sizeof(code),
         "(function(){"
+        "var levelNames=['DEBUG','INFO','WARN','ERROR'];"
         "globalThis.mbpf={"
-        "apiVersion:%u"
+        "apiVersion:%u,"
+        "log:function(level,msg){"
+            "if(typeof level!=='number')level=1;"
+            "if(level<0)level=0;"
+            "if(level>3)level=3;"
+            "if(msg===undefined)msg='';"
+            "console.log('['+levelNames[level]+'] '+String(msg));"
+        "}"
         "};"
         "})()",
         api_version);
@@ -4154,6 +4172,10 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_ERR_NESTED_EXEC;
     }
 
+    /* Set up log context for mbpf.log helper */
+    mbpf_set_log_context((void *)prog->runtime->config.log_fn,
+                         prog->runtime->config.debug_mode);
+
     JSContext *ctx = inst->js_ctx;
 
     /* Get global object */
@@ -4161,6 +4183,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     if (JS_IsUndefined(global) || JS_IsException(global)) {
         prog->stats.exceptions++;
         *out_rc = exception_default;
+        mbpf_clear_log_context();
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -4256,6 +4279,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     if (JS_StackCheck(ctx, 3)) {
         prog->stats.exceptions++;
         *out_rc = exception_default;
+        mbpf_clear_log_context();
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -4273,6 +4297,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     if (JS_IsUndefined(prog_func) || !JS_IsFunction(ctx, prog_func)) {
         prog->stats.exceptions++;
         *out_rc = exception_default;
+        mbpf_clear_log_context();
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -4290,6 +4315,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         prog->stats.exceptions++;
         JS_GetException(ctx);  /* Clear the exception */
         *out_rc = exception_default;
+        mbpf_clear_log_context();
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
     }
@@ -4434,6 +4460,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         }
     }
 
+    mbpf_clear_log_context();
     __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
     return MBPF_OK;
 }

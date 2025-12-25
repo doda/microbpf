@@ -380,6 +380,26 @@ if [ -f build/test_map_concurrency ]; then
     fi
 fi
 
+# Run helper API version tests
+if [ -f build/test_helper_api_version ]; then
+    ./build/test_helper_api_version
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Helper API version tests failed"
+        exit 1
+    fi
+fi
+
+# Run helper log tests
+if [ -f build/test_helper_log ]; then
+    ./build/test_helper_log
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Helper log tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

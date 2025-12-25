@@ -552,7 +552,7 @@
       "Verify log is rate-limited or no-op in production mode",
       "Test different log levels"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "helper-u64-load-store",
