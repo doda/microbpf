@@ -738,7 +738,7 @@
       "Verify other programs continue to execute",
       "Verify shared state (maps) is not corrupted"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "circuit-breaker",
