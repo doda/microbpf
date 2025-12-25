@@ -579,7 +579,7 @@
       "Verify out contains monotonic time in nanoseconds as u64",
       "Call twice and verify second value >= first"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "helper-emit",

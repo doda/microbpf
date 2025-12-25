@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <sched.h>
 #include <unistd.h>
+#include <time.h>
 
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
 extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
@@ -485,20 +486,27 @@ static void free_maps(mbpf_program_t *prog) {
  * This object provides helper functions and properties:
  * - apiVersion: Runtime API version encoded as (major << 16) | minor
  * - log(level, msg): Logging helper that maps to runtime log callback
+ * - u64LoadLE/u64StoreLE: 64-bit value helpers
+ * - nowNs(out): Monotonic time in nanoseconds (requires CAP_TIME)
  *
  * Log levels: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
  * The log function uses console.log internally but adds level prefix.
  */
-static int setup_mbpf_object(JSContext *ctx) {
-    /* Build JS code to create mbpf object with apiVersion, log, and u64 helpers.
+static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
+    /* Build JS code to create mbpf object with apiVersion, log, u64 helpers,
+     * and optionally nowNs if CAP_TIME is granted.
      * The log function prepends the level prefix and calls console.log,
      * which maps to js_print in mbpf_stdlib.c where the actual logging happens.
-     * u64LoadLE/u64StoreLE handle 64-bit values as [lo, hi] pairs in LE format. */
-    char code[2048];
+     * u64LoadLE/u64StoreLE handle 64-bit values as [lo, hi] pairs in LE format.
+     * nowNs reads from _mbpf_time_ns which is updated by the runtime before each run. */
+    char code[3072];
     uint32_t api_version = MBPF_API_VERSION;
+    int has_cap_time = (capabilities & MBPF_CAP_TIME) != 0;
+
     snprintf(code, sizeof(code),
         "(function(){"
         "var levelNames=['DEBUG','INFO','WARN','ERROR'];"
+        "%s"  /* CAP_TIME: create _mbpf_time_ns array */
         "globalThis.mbpf={"
         "apiVersion:%u,"
         "log:function(level,msg){"
@@ -527,10 +535,18 @@ static int setup_mbpf_object(JSContext *ctx) {
             "bytes[offset+2]=(lo>>16)&0xFF;bytes[offset+3]=(lo>>24)&0xFF;"
             "bytes[offset+4]=hi&0xFF;bytes[offset+5]=(hi>>8)&0xFF;"
             "bytes[offset+6]=(hi>>16)&0xFF;bytes[offset+7]=(hi>>24)&0xFF;"
-        "}"
+        "}%s"
         "};"
         "})()",
-        api_version);
+        has_cap_time ? "globalThis._mbpf_time_ns=[0,0];" : "",
+        api_version,
+        has_cap_time ?
+            ","
+            "nowNs:function(out){"
+                "if(!Array.isArray(out)||out.length<2)throw new TypeError('out must be array of length 2');"
+                "out[0]=_mbpf_time_ns[0];out[1]=_mbpf_time_ns[1];"
+            "}"
+            : "");
 
     JSValue result = JS_Eval(ctx, code, strlen(code), "<mbpf>", JS_EVAL_RETVAL);
     if (JS_IsException(result)) {
@@ -2235,7 +2251,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
 
     /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
-        if (setup_mbpf_object(prog->instances[i].js_ctx) != 0 ||
+        if (setup_mbpf_object(prog->instances[i].js_ctx, prog->manifest.capabilities) != 0 ||
             setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
@@ -3141,7 +3157,7 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
 
     /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
-        if (setup_mbpf_object(prog->instances[i].js_ctx) != 0 ||
+        if (setup_mbpf_object(prog->instances[i].js_ctx, prog->manifest.capabilities) != 0 ||
             setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
@@ -4327,6 +4343,25 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     JS_PushArg(ctx, ctx_arg);      /* ctx argument */
     JS_PushArg(ctx, prog_func);    /* function */
     JS_PushArg(ctx, JS_NULL);      /* this */
+
+    /* Update _mbpf_time_ns if CAP_TIME is granted.
+     * This provides the current monotonic time in nanoseconds to mbpf.nowNs(). */
+    if (prog->manifest.capabilities & MBPF_CAP_TIME) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        int64_t ns = (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+        uint32_t lo = (uint32_t)(ns & 0xFFFFFFFFULL);
+        uint32_t hi = (uint32_t)((uint64_t)ns >> 32);
+
+        char time_code[128];
+        snprintf(time_code, sizeof(time_code),
+            "_mbpf_time_ns[0]=%u;_mbpf_time_ns[1]=%u;", lo, hi);
+        JSValue time_result = JS_Eval(ctx, time_code, strlen(time_code),
+                                       "<time>", 0);
+        if (JS_IsException(time_result)) {
+            JS_GetException(ctx);  /* Clear exception, non-fatal */
+        }
+    }
 
     prog->stats.invocations++;
 
