@@ -93,6 +93,8 @@ typedef enum {
     MBPF_ERR_ABI_MISMATCH       = -20,
     MBPF_ERR_MISSING_ENTRY      = -21,
     MBPF_ERR_INIT_FAILED        = -22,
+    MBPF_ERR_MAP_INCOMPATIBLE   = -23,  /* Map schema changed and policy requires preservation */
+    MBPF_ERR_STILL_ATTACHED     = -24,  /* Program still attached, cannot update */
 } mbpf_error_t;
 
 /* Capabilities */
@@ -141,6 +143,18 @@ typedef struct mbpf_load_opts {
     size_t override_heap_size;
     bool allow_unsigned;
 } mbpf_load_opts_t;
+
+/* Map policy flags for program updates */
+#define MBPF_MAP_POLICY_PRESERVE   0  /* Preserve maps if compatible (default) */
+#define MBPF_MAP_POLICY_DESTROY    1  /* Always destroy maps on update */
+
+/* Update options for hot swap */
+typedef struct mbpf_update_opts {
+    uint32_t override_capabilities;
+    size_t override_heap_size;
+    bool allow_unsigned;
+    uint32_t map_policy;  /* MBPF_MAP_POLICY_* */
+} mbpf_update_opts_t;
 
 /* Per-program statistics */
 typedef struct mbpf_stats {
@@ -267,6 +281,16 @@ void mbpf_runtime_shutdown(mbpf_runtime_t *rt);
 int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
                       const mbpf_load_opts_t *opts, mbpf_program_t **out_prog);
 int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog);
+
+/* Update a program to a new version (hot swap).
+ * By default, maps are preserved if the new program's map definitions are
+ * compatible with the old program's maps (same name, type, key_size, value_size).
+ * If maps are incompatible or map_policy is MBPF_MAP_POLICY_DESTROY, maps are
+ * recreated fresh. The program must be detached before update.
+ * Returns MBPF_OK on success, or an error code. */
+int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
+                        const void *pkg, size_t pkg_len,
+                        const mbpf_update_opts_t *opts);
 
 int mbpf_program_attach(mbpf_runtime_t *rt, mbpf_program_t *prog,
                         mbpf_hook_id_t hook);

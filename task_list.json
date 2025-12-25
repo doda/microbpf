@@ -517,7 +517,7 @@
       "Verify map data is preserved after update",
       "Verify maps are destroyed when policy requires"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-concurrency",

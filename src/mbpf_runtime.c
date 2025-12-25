@@ -17,6 +17,10 @@
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
 extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
 
+/* Forward declarations for static functions used across the file */
+struct mbpf_instance;
+static void call_mbpf_fini_on_instance(struct mbpf_instance *inst);
+
 /*
  * Runtime array map storage.
  * For array maps, values are stored in a flat array.
@@ -1372,6 +1376,445 @@ static int32_t get_exception_default(mbpf_runtime_t *rt, mbpf_hook_type_t hook_t
     return mbpf_hook_exception_default(hook_type);
 }
 
+/*
+ * Sync map data from JS arrays back to C storage.
+ * This is used before destroying JS instances to preserve map data.
+ * Syncs array, hash, LRU, and per-CPU maps. Ring buffers and counters are not synced
+ * (ring buffers are event streams, counters have simpler state).
+ */
+static void sync_maps_from_js_to_c(mbpf_instance_t *inst, mbpf_program_t *prog, uint32_t instance_idx) {
+    if (!inst->js_initialized || !inst->js_ctx || !prog->maps) {
+        return;
+    }
+
+    JSContext *ctx = inst->js_ctx;
+
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+
+        /*
+         * Note: MQuickJS uses a compacting GC - values don't need manual freeing.
+         * The GC will collect all temporary JSValues when it runs.
+         */
+        if (storage->type == MBPF_MAP_TYPE_ARRAY) {
+            mbpf_array_map_t *arr = &storage->u.array;
+            if (!arr->values || !arr->valid) continue;
+
+            size_t total_bytes = (size_t)arr->max_entries * arr->value_size;
+
+            /* Extract data array from JS, reading element by element */
+            char code[256];
+            snprintf(code, sizeof(code), "_mapData[%u];", i);
+
+            JSValue data_arr = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(data_arr)) {
+                for (size_t j = 0; j < total_bytes; j++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, data_arr, (uint32_t)j);
+                    int val = 0;
+                    JS_ToInt32(ctx, &val, elem);
+                    arr->values[j] = (uint8_t)val;
+                }
+            }
+
+            /* Extract valid array from JS */
+            snprintf(code, sizeof(code), "_mapValid[%u];", i);
+            JSValue valid_arr = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(valid_arr)) {
+                size_t bitmap_size = (arr->max_entries + 7) / 8;
+                memset(arr->valid, 0, bitmap_size);
+                for (uint32_t j = 0; j < arr->max_entries; j++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, valid_arr, j);
+                    int val = 0;
+                    JS_ToInt32(ctx, &val, elem);
+                    if (val) {
+                        arr->valid[j / 8] |= (1 << (j % 8));
+                    }
+                }
+            }
+        } else if (storage->type == MBPF_MAP_TYPE_HASH) {
+            mbpf_hash_map_t *hash = &storage->u.hash;
+            if (!hash->buckets) continue;
+
+            size_t bucket_size = 1 + hash->key_size + hash->value_size;
+            size_t total_bytes = (size_t)hash->max_entries * bucket_size;
+
+            /* Extract data array from JS */
+            char code[256];
+            snprintf(code, sizeof(code), "_mapData[%u];", i);
+
+            JSValue data_arr = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(data_arr)) {
+                for (size_t j = 0; j < total_bytes; j++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, data_arr, (uint32_t)j);
+                    int val = 0;
+                    JS_ToInt32(ctx, &val, elem);
+                    hash->buckets[j] = (uint8_t)val;
+                }
+            }
+
+            /* Extract count from JS */
+            snprintf(code, sizeof(code), "_mapValid[%u].count;", i);
+            JSValue count_val = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(count_val)) {
+                int count = 0;
+                JS_ToInt32(ctx, &count, count_val);
+                hash->count = (uint32_t)count;
+            }
+        } else if (storage->type == MBPF_MAP_TYPE_LRU) {
+            mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
+            if (!lru->buckets) continue;
+
+            /* LRU bucket layout: [valid:1][prev:4][next:4][key][value] */
+            size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
+            size_t total_bytes = (size_t)lru->max_entries * bucket_size;
+
+            /* Extract data array from JS */
+            char code[256];
+            snprintf(code, sizeof(code), "_mapData[%u];", i);
+
+            JSValue data_arr = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(data_arr)) {
+                for (size_t j = 0; j < total_bytes; j++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, data_arr, (uint32_t)j);
+                    int val = 0;
+                    JS_ToInt32(ctx, &val, elem);
+                    lru->buckets[j] = (uint8_t)val;
+                }
+            }
+
+            /* Extract count, head, tail from JS _mapValid object */
+            snprintf(code, sizeof(code), "_mapValid[%u].count;", i);
+            JSValue count_val = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(count_val)) {
+                int count = 0;
+                JS_ToInt32(ctx, &count, count_val);
+                lru->count = (uint32_t)count;
+            }
+
+            snprintf(code, sizeof(code), "_mapValid[%u].head;", i);
+            JSValue head_val = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(head_val)) {
+                uint32_t head = 0;
+                JS_ToUint32(ctx, &head, head_val);
+                lru->lru_head = head;
+            }
+
+            snprintf(code, sizeof(code), "_mapValid[%u].tail;", i);
+            JSValue tail_val = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(tail_val)) {
+                uint32_t tail = 0;
+                JS_ToUint32(ctx, &tail, tail_val);
+                lru->lru_tail = tail;
+            }
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
+            mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
+            if (!pca->values || !pca->valid) continue;
+            if (instance_idx >= pca->num_cpus) continue;
+            if (!pca->values[instance_idx] || !pca->valid[instance_idx]) continue;
+
+            size_t total_bytes = (size_t)pca->max_entries * pca->value_size;
+
+            /* Extract data array from JS */
+            char code[256];
+            snprintf(code, sizeof(code), "_mapData[%u];", i);
+
+            JSValue data_arr = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(data_arr)) {
+                for (size_t j = 0; j < total_bytes; j++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, data_arr, (uint32_t)j);
+                    int val = 0;
+                    JS_ToInt32(ctx, &val, elem);
+                    pca->values[instance_idx][j] = (uint8_t)val;
+                }
+            }
+
+            /* Extract valid array from JS (1 byte per entry) */
+            snprintf(code, sizeof(code), "_mapValid[%u];", i);
+            JSValue valid_arr = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(valid_arr)) {
+                for (uint32_t j = 0; j < pca->max_entries; j++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, valid_arr, j);
+                    int val = 0;
+                    JS_ToInt32(ctx, &val, elem);
+                    pca->valid[instance_idx][j] = (uint8_t)val;
+                }
+            }
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH) {
+            mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
+            if (!pch->buckets || !pch->counts) continue;
+            if (instance_idx >= pch->num_cpus) continue;
+            if (!pch->buckets[instance_idx]) continue;
+
+            size_t bucket_size = 1 + pch->key_size + pch->value_size;
+            size_t total_bytes = (size_t)pch->max_entries * bucket_size;
+
+            /* Extract data array from JS */
+            char code[256];
+            snprintf(code, sizeof(code), "_mapData[%u];", i);
+
+            JSValue data_arr = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(data_arr)) {
+                for (size_t j = 0; j < total_bytes; j++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, data_arr, (uint32_t)j);
+                    int val = 0;
+                    JS_ToInt32(ctx, &val, elem);
+                    pch->buckets[instance_idx][j] = (uint8_t)val;
+                }
+            }
+
+            /* Extract count from JS */
+            snprintf(code, sizeof(code), "_mapValid[%u].count;", i);
+            JSValue count_val = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (!JS_IsException(count_val)) {
+                int count = 0;
+                JS_ToInt32(ctx, &count, count_val);
+                pch->counts[instance_idx] = (uint32_t)count;
+            }
+        }
+        /* Ring buffer and counter maps are not synced:
+         * - Ring buffers are event streams, not persistent data
+         * - Counters could be synced but typically reset on update */
+    }
+}
+
+/*
+ * Initialize JS map arrays from C storage.
+ * This is used after creating new JS instances to restore map data.
+ * Must be called after setup_maps_object.
+ *
+ * Uses JS_Eval to set array elements since MQuickJS doesn't expose
+ * direct buffer access for Uint8Arrays.
+ */
+static void sync_maps_from_c_to_js(mbpf_instance_t *inst, mbpf_program_t *prog, uint32_t instance_idx) {
+    if (!inst->js_initialized || !inst->js_ctx || !prog->maps) {
+        return;
+    }
+
+    JSContext *ctx = inst->js_ctx;
+
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+
+        if (storage->type == MBPF_MAP_TYPE_ARRAY) {
+            mbpf_array_map_t *arr = &storage->u.array;
+            if (!arr->values || !arr->valid) continue;
+
+            size_t total_bytes = (size_t)arr->max_entries * arr->value_size;
+
+            /* Build JS code to set all data bytes in batches */
+            /* Use a helper function to copy data: (function(d,bytes){...})(_mapData[i],[...]) */
+            size_t code_size = 256 + total_bytes * 4 + arr->max_entries * 4;  /* Estimate */
+            char *code = malloc(code_size);
+            if (!code) continue;
+
+            char *p = code;
+            int remaining = (int)code_size;
+            int written;
+
+            /* Generate: (function(d,v){for(var i=0;i<bytes.length;i++)d[i]=bytes[i];...})(_mapData[i],[b0,b1,...]) */
+            written = snprintf(p, remaining, "(function(d,v,bytes,valid){"
+                "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
+                "for(var i=0;i<valid.length;i++)v[i]=valid[i];"
+                "})(_mapData[%u],_mapValid[%u],[", i, i);
+            p += written;
+            remaining -= written;
+
+            /* Add data bytes */
+            for (size_t j = 0; j < total_bytes; j++) {
+                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", arr->values[j]);
+                p += written;
+                remaining -= written;
+            }
+
+            /* Add valid array */
+            written = snprintf(p, remaining, "],[");
+            p += written;
+            remaining -= written;
+
+            for (uint32_t j = 0; j < arr->max_entries; j++) {
+                int valid_bit = (arr->valid[j / 8] & (1 << (j % 8))) ? 1 : 0;
+                written = snprintf(p, remaining, "%s%d", j > 0 ? "," : "", valid_bit);
+                p += written;
+                remaining -= written;
+            }
+
+            written = snprintf(p, remaining, "]);");
+            p += written;
+
+            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (JS_IsException(result)) {
+                JS_GetException(ctx);
+            }
+            free(code);
+
+        } else if (storage->type == MBPF_MAP_TYPE_HASH) {
+            mbpf_hash_map_t *hash = &storage->u.hash;
+            if (!hash->buckets) continue;
+
+            size_t bucket_size = 1 + hash->key_size + hash->value_size;
+            size_t total_bytes = (size_t)hash->max_entries * bucket_size;
+
+            /* Build JS code to set all bucket bytes */
+            size_t code_size = 256 + total_bytes * 4;
+            char *code = malloc(code_size);
+            if (!code) continue;
+
+            char *p = code;
+            int remaining = (int)code_size;
+            int written;
+
+            written = snprintf(p, remaining, "(function(d,bytes){"
+                "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
+                "})(_mapData[%u],[", i);
+            p += written;
+            remaining -= written;
+
+            for (size_t j = 0; j < total_bytes; j++) {
+                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", hash->buckets[j]);
+                p += written;
+                remaining -= written;
+            }
+
+            written = snprintf(p, remaining, "]);_mapValid[%u].count=%u;", i, hash->count);
+            p += written;
+
+            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (JS_IsException(result)) {
+                JS_GetException(ctx);
+            }
+            free(code);
+        } else if (storage->type == MBPF_MAP_TYPE_LRU) {
+            mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
+            if (!lru->buckets) continue;
+
+            /* LRU bucket layout: [valid:1][prev:4][next:4][key][value] */
+            size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
+            size_t total_bytes = (size_t)lru->max_entries * bucket_size;
+
+            /* Build JS code to set all bucket bytes and metadata */
+            size_t code_size = 256 + total_bytes * 4;
+            char *code = malloc(code_size);
+            if (!code) continue;
+
+            char *p = code;
+            int remaining = (int)code_size;
+            int written;
+
+            written = snprintf(p, remaining, "(function(d,bytes){"
+                "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
+                "})(_mapData[%u],[", i);
+            p += written;
+            remaining -= written;
+
+            for (size_t j = 0; j < total_bytes; j++) {
+                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", lru->buckets[j]);
+                p += written;
+                remaining -= written;
+            }
+
+            /* Set count, head, tail */
+            written = snprintf(p, remaining, "]);_mapValid[%u].count=%u;_mapValid[%u].head=%u;_mapValid[%u].tail=%u;",
+                i, lru->count, i, lru->lru_head, i, lru->lru_tail);
+            p += written;
+
+            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (JS_IsException(result)) {
+                JS_GetException(ctx);
+            }
+            free(code);
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
+            mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
+            if (!pca->values || !pca->valid) continue;
+            if (instance_idx >= pca->num_cpus) continue;
+            if (!pca->values[instance_idx] || !pca->valid[instance_idx]) continue;
+
+            size_t total_bytes = (size_t)pca->max_entries * pca->value_size;
+
+            /* Build JS code to set all data bytes and valid flags */
+            size_t code_size = 256 + total_bytes * 4 + pca->max_entries * 4;
+            char *code = malloc(code_size);
+            if (!code) continue;
+
+            char *p = code;
+            int remaining = (int)code_size;
+            int written;
+
+            written = snprintf(p, remaining, "(function(d,v,bytes,valid){"
+                "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
+                "for(var i=0;i<valid.length;i++)v[i]=valid[i];"
+                "})(_mapData[%u],_mapValid[%u],[", i, i);
+            p += written;
+            remaining -= written;
+
+            /* Add data bytes */
+            for (size_t j = 0; j < total_bytes; j++) {
+                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", pca->values[instance_idx][j]);
+                p += written;
+                remaining -= written;
+            }
+
+            /* Add valid array */
+            written = snprintf(p, remaining, "],[");
+            p += written;
+            remaining -= written;
+
+            for (uint32_t j = 0; j < pca->max_entries; j++) {
+                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", pca->valid[instance_idx][j]);
+                p += written;
+                remaining -= written;
+            }
+
+            written = snprintf(p, remaining, "]);");
+            p += written;
+
+            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (JS_IsException(result)) {
+                JS_GetException(ctx);
+            }
+            free(code);
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH) {
+            mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
+            if (!pch->buckets || !pch->counts) continue;
+            if (instance_idx >= pch->num_cpus) continue;
+            if (!pch->buckets[instance_idx]) continue;
+
+            size_t bucket_size = 1 + pch->key_size + pch->value_size;
+            size_t total_bytes = (size_t)pch->max_entries * bucket_size;
+
+            /* Build JS code to set all bucket bytes */
+            size_t code_size = 256 + total_bytes * 4;
+            char *code = malloc(code_size);
+            if (!code) continue;
+
+            char *p = code;
+            int remaining = (int)code_size;
+            int written;
+
+            written = snprintf(p, remaining, "(function(d,bytes){"
+                "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
+                "})(_mapData[%u],[", i);
+            p += written;
+            remaining -= written;
+
+            for (size_t j = 0; j < total_bytes; j++) {
+                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", pch->buckets[instance_idx][j]);
+                p += written;
+                remaining -= written;
+            }
+
+            written = snprintf(p, remaining, "]);_mapValid[%u].count=%u;", i, pch->counts[instance_idx]);
+            p += written;
+
+            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
+            if (JS_IsException(result)) {
+                JS_GetException(ctx);
+            }
+            free(code);
+        }
+        /* Ring buffer and counter maps are not synced */
+    }
+}
+
 /* Get number of CPUs for per-CPU instance mode */
 static uint32_t get_num_cpus(void) {
 #ifdef _SC_NPROCESSORS_ONLN
@@ -1863,6 +2306,810 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
         prog->bytecode = NULL;
     }
     free(prog);
+
+    return MBPF_OK;
+}
+
+/*
+ * Check if two map definitions are compatible for data preservation.
+ * Maps are compatible if they have the same type, key_size, and value_size.
+ * max_entries can differ - if new map is smaller, data may be truncated.
+ */
+static bool maps_compatible(const mbpf_map_storage_t *old_map,
+                            const mbpf_map_def_t *new_def,
+                            uint32_t num_instances) {
+    /* Determine effective type for new map */
+    uint32_t new_type = new_def->type;
+    if (new_def->flags & MBPF_MAP_FLAG_PERCPU) {
+        if (new_def->type == MBPF_MAP_TYPE_ARRAY) {
+            new_type = MBPF_MAP_TYPE_PERCPU_ARRAY;
+        } else if (new_def->type == MBPF_MAP_TYPE_HASH) {
+            new_type = MBPF_MAP_TYPE_PERCPU_HASH;
+        }
+    }
+
+    if (old_map->type != new_type) {
+        return false;
+    }
+
+    /* Check type-specific compatibility */
+    switch (old_map->type) {
+        case MBPF_MAP_TYPE_ARRAY:
+            return old_map->u.array.value_size == new_def->value_size;
+
+        case MBPF_MAP_TYPE_HASH:
+            return old_map->u.hash.key_size == new_def->key_size &&
+                   old_map->u.hash.value_size == new_def->value_size;
+
+        case MBPF_MAP_TYPE_LRU:
+            return old_map->u.lru_hash.key_size == new_def->key_size &&
+                   old_map->u.lru_hash.value_size == new_def->value_size;
+
+        case MBPF_MAP_TYPE_PERCPU_ARRAY:
+            return old_map->u.percpu_array.value_size == new_def->value_size &&
+                   old_map->u.percpu_array.num_cpus == num_instances;
+
+        case MBPF_MAP_TYPE_PERCPU_HASH:
+            return old_map->u.percpu_hash.key_size == new_def->key_size &&
+                   old_map->u.percpu_hash.value_size == new_def->value_size &&
+                   old_map->u.percpu_hash.num_cpus == num_instances;
+
+        case MBPF_MAP_TYPE_RING:
+            return old_map->u.ring.max_event_size == new_def->value_size;
+
+        case MBPF_MAP_TYPE_COUNTER:
+            return true;  /* Counter maps are always compatible */
+
+        default:
+            return false;
+    }
+}
+
+/*
+ * Find a map by name in the old program's map storage.
+ * Returns the index if found, or -1 if not found.
+ */
+static int find_map_by_name(mbpf_program_t *prog, const char *name) {
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        if (strncmp(prog->maps[i].name, name, sizeof(prog->maps[i].name)) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/*
+ * Resize and copy map data from old storage to new storage.
+ * Allocates new storage with the new max_entries and copies data.
+ * For array maps: truncates if new is smaller, zero-fills if larger.
+ * For hash maps: rehashes entries if capacity changes.
+ * Returns 0 on success, -1 on allocation failure.
+ */
+static int resize_map_storage(mbpf_map_storage_t *new_storage,
+                              const mbpf_map_storage_t *old_storage,
+                              const mbpf_map_def_t *new_def,
+                              uint32_t num_instances) {
+    /* Copy basic info */
+    strncpy(new_storage->name, new_def->name, sizeof(new_storage->name) - 1);
+    new_storage->name[sizeof(new_storage->name) - 1] = '\0';
+    new_storage->type = old_storage->type;
+
+    switch (old_storage->type) {
+        case MBPF_MAP_TYPE_ARRAY: {
+            mbpf_array_map_t *new_arr = &new_storage->u.array;
+            const mbpf_array_map_t *old_arr = &old_storage->u.array;
+
+            new_arr->max_entries = new_def->max_entries;
+            new_arr->value_size = old_arr->value_size;
+
+            size_t new_data_size = (size_t)new_def->max_entries * old_arr->value_size;
+            size_t new_valid_size = (new_def->max_entries + 7) / 8;
+            size_t old_data_size = (size_t)old_arr->max_entries * old_arr->value_size;
+            size_t old_valid_size = (old_arr->max_entries + 7) / 8;
+
+            new_arr->values = calloc(1, new_data_size);
+            new_arr->valid = calloc(1, new_valid_size);
+            if (!new_arr->values || !new_arr->valid) {
+                free(new_arr->values);
+                free(new_arr->valid);
+                return -1;
+            }
+
+            /* Copy data, truncating if new is smaller */
+            uint32_t copy_entries = old_arr->max_entries < new_def->max_entries ?
+                                    old_arr->max_entries : new_def->max_entries;
+            size_t copy_data = (size_t)copy_entries * old_arr->value_size;
+            memcpy(new_arr->values, old_arr->values, copy_data);
+
+            /* Copy valid bitmap, bit by bit for the copied entries */
+            for (uint32_t j = 0; j < copy_entries; j++) {
+                if (old_arr->valid[j / 8] & (1 << (j % 8))) {
+                    new_arr->valid[j / 8] |= (1 << (j % 8));
+                }
+            }
+            break;
+        }
+
+        case MBPF_MAP_TYPE_HASH: {
+            mbpf_hash_map_t *new_hash = &new_storage->u.hash;
+            const mbpf_hash_map_t *old_hash = &old_storage->u.hash;
+
+            new_hash->max_entries = new_def->max_entries;
+            new_hash->key_size = old_hash->key_size;
+            new_hash->value_size = old_hash->value_size;
+            new_hash->count = 0;  /* Will be recalculated during rehash */
+
+            size_t old_bucket_size = 1 + old_hash->key_size + old_hash->value_size;
+            size_t new_bucket_size = old_bucket_size;
+            size_t new_total = (size_t)new_def->max_entries * new_bucket_size;
+
+            new_hash->buckets = calloc(1, new_total);
+            if (!new_hash->buckets) {
+                return -1;
+            }
+
+            /* Rehash valid entries from old to new */
+            for (uint32_t j = 0; j < old_hash->max_entries; j++) {
+                uint8_t *old_bucket = old_hash->buckets + j * old_bucket_size;
+                if (old_bucket[0] != 1) continue;  /* Skip empty/deleted */
+
+                uint8_t *key = old_bucket + 1;
+                uint8_t *value = old_bucket + 1 + old_hash->key_size;
+
+                /* FNV-1a hash */
+                uint32_t h = 2166136261u;
+                for (uint32_t k = 0; k < old_hash->key_size; k++) {
+                    h ^= key[k];
+                    h *= 16777619u;
+                }
+
+                /* Find slot in new table */
+                for (uint32_t probe = 0; probe < new_def->max_entries; probe++) {
+                    uint32_t idx = (h + probe) % new_def->max_entries;
+                    uint8_t *new_bucket = new_hash->buckets + idx * new_bucket_size;
+                    if (new_bucket[0] == 0) {
+                        new_bucket[0] = 1;
+                        memcpy(new_bucket + 1, key, old_hash->key_size);
+                        memcpy(new_bucket + 1 + old_hash->key_size, value, old_hash->value_size);
+                        new_hash->count++;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+
+        case MBPF_MAP_TYPE_LRU: {
+            mbpf_lru_hash_map_t *new_lru = &new_storage->u.lru_hash;
+            const mbpf_lru_hash_map_t *old_lru = &old_storage->u.lru_hash;
+
+            new_lru->max_entries = new_def->max_entries;
+            new_lru->key_size = old_lru->key_size;
+            new_lru->value_size = old_lru->value_size;
+            new_lru->count = 0;
+            new_lru->lru_head = 0xFFFFFFFF;
+            new_lru->lru_tail = 0xFFFFFFFF;
+
+            /* LRU bucket layout: [valid:1][prev:4][next:4][key][value] */
+            size_t old_bucket_size = 1 + 4 + 4 + old_lru->key_size + old_lru->value_size;
+            size_t new_bucket_size = old_bucket_size;
+            size_t new_total = (size_t)new_def->max_entries * new_bucket_size;
+
+            new_lru->buckets = calloc(1, new_total);
+            if (!new_lru->buckets) {
+                return -1;
+            }
+
+            /* Collect valid entries in LRU order (MRU first) and rehash */
+            /* We need to maintain LRU order during resize */
+            uint32_t idx = old_lru->lru_head;
+            while (idx != 0xFFFFFFFF && new_lru->count < new_def->max_entries) {
+                uint8_t *old_bucket = old_lru->buckets + idx * old_bucket_size;
+                if (old_bucket[0] != 1) break;  /* Should not happen in valid list */
+
+                uint8_t *key = old_bucket + 9;  /* Skip valid + prev + next */
+                uint8_t *value = old_bucket + 9 + old_lru->key_size;
+
+                /* FNV-1a hash */
+                uint32_t h = 2166136261u;
+                for (uint32_t k = 0; k < old_lru->key_size; k++) {
+                    h ^= key[k];
+                    h *= 16777619u;
+                }
+
+                /* Find slot in new table */
+                for (uint32_t probe = 0; probe < new_def->max_entries; probe++) {
+                    uint32_t new_idx = (h + probe) % new_def->max_entries;
+                    uint8_t *new_bucket = new_lru->buckets + new_idx * new_bucket_size;
+                    if (new_bucket[0] == 0) {
+                        new_bucket[0] = 1;
+                        /* Set prev/next for LRU list - add to tail */
+                        uint32_t prev_tail = new_lru->lru_tail;
+                        /* prev = prev_tail */
+                        new_bucket[1] = prev_tail & 0xFF;
+                        new_bucket[2] = (prev_tail >> 8) & 0xFF;
+                        new_bucket[3] = (prev_tail >> 16) & 0xFF;
+                        new_bucket[4] = (prev_tail >> 24) & 0xFF;
+                        /* next = NULL */
+                        new_bucket[5] = 0xFF;
+                        new_bucket[6] = 0xFF;
+                        new_bucket[7] = 0xFF;
+                        new_bucket[8] = 0xFF;
+                        /* Copy key and value */
+                        memcpy(new_bucket + 9, key, old_lru->key_size);
+                        memcpy(new_bucket + 9 + old_lru->key_size, value, old_lru->value_size);
+
+                        /* Update LRU list */
+                        if (prev_tail != 0xFFFFFFFF) {
+                            uint8_t *prev_bucket = new_lru->buckets + prev_tail * new_bucket_size;
+                            prev_bucket[5] = new_idx & 0xFF;
+                            prev_bucket[6] = (new_idx >> 8) & 0xFF;
+                            prev_bucket[7] = (new_idx >> 16) & 0xFF;
+                            prev_bucket[8] = (new_idx >> 24) & 0xFF;
+                        }
+                        if (new_lru->lru_head == 0xFFFFFFFF) {
+                            new_lru->lru_head = new_idx;
+                        }
+                        new_lru->lru_tail = new_idx;
+                        new_lru->count++;
+                        break;
+                    }
+                }
+
+                /* Move to next in old LRU list */
+                uint32_t next_idx = (uint32_t)old_bucket[5] |
+                                   ((uint32_t)old_bucket[6] << 8) |
+                                   ((uint32_t)old_bucket[7] << 16) |
+                                   ((uint32_t)old_bucket[8] << 24);
+                idx = next_idx;
+            }
+            break;
+        }
+
+        case MBPF_MAP_TYPE_PERCPU_ARRAY: {
+            mbpf_percpu_array_map_t *new_pca = &new_storage->u.percpu_array;
+            const mbpf_percpu_array_map_t *old_pca = &old_storage->u.percpu_array;
+
+            new_pca->max_entries = new_def->max_entries;
+            new_pca->value_size = old_pca->value_size;
+            new_pca->num_cpus = num_instances;
+
+            new_pca->values = calloc(num_instances, sizeof(uint8_t *));
+            new_pca->valid = calloc(num_instances, sizeof(uint8_t *));
+            if (!new_pca->values || !new_pca->valid) {
+                free(new_pca->values);
+                free(new_pca->valid);
+                return -1;
+            }
+
+            size_t new_data_size = (size_t)new_def->max_entries * old_pca->value_size;
+            uint32_t copy_entries = old_pca->max_entries < new_def->max_entries ?
+                                    old_pca->max_entries : new_def->max_entries;
+            size_t copy_data = (size_t)copy_entries * old_pca->value_size;
+
+            for (uint32_t cpu = 0; cpu < num_instances; cpu++) {
+                new_pca->values[cpu] = calloc(1, new_data_size);
+                new_pca->valid[cpu] = calloc(new_def->max_entries, 1);
+                if (!new_pca->values[cpu] || !new_pca->valid[cpu]) {
+                    /* Cleanup on failure */
+                    for (uint32_t c = 0; c <= cpu; c++) {
+                        free(new_pca->values[c]);
+                        free(new_pca->valid[c]);
+                    }
+                    free(new_pca->values);
+                    free(new_pca->valid);
+                    return -1;
+                }
+
+                if (cpu < old_pca->num_cpus && old_pca->values[cpu] && old_pca->valid[cpu]) {
+                    memcpy(new_pca->values[cpu], old_pca->values[cpu], copy_data);
+                    memcpy(new_pca->valid[cpu], old_pca->valid[cpu], copy_entries);
+                }
+            }
+            break;
+        }
+
+        case MBPF_MAP_TYPE_PERCPU_HASH: {
+            mbpf_percpu_hash_map_t *new_pch = &new_storage->u.percpu_hash;
+            const mbpf_percpu_hash_map_t *old_pch = &old_storage->u.percpu_hash;
+
+            new_pch->max_entries = new_def->max_entries;
+            new_pch->key_size = old_pch->key_size;
+            new_pch->value_size = old_pch->value_size;
+            new_pch->num_cpus = num_instances;
+
+            size_t old_bucket_size = 1 + old_pch->key_size + old_pch->value_size;
+            size_t new_bucket_size = old_bucket_size;
+            size_t new_total = (size_t)new_def->max_entries * new_bucket_size;
+
+            new_pch->buckets = calloc(num_instances, sizeof(uint8_t *));
+            new_pch->counts = calloc(num_instances, sizeof(uint32_t));
+            if (!new_pch->buckets || !new_pch->counts) {
+                free(new_pch->buckets);
+                free(new_pch->counts);
+                return -1;
+            }
+
+            for (uint32_t cpu = 0; cpu < num_instances; cpu++) {
+                new_pch->buckets[cpu] = calloc(1, new_total);
+                if (!new_pch->buckets[cpu]) {
+                    for (uint32_t c = 0; c < cpu; c++) {
+                        free(new_pch->buckets[c]);
+                    }
+                    free(new_pch->buckets);
+                    free(new_pch->counts);
+                    return -1;
+                }
+                new_pch->counts[cpu] = 0;
+
+                if (cpu < old_pch->num_cpus && old_pch->buckets[cpu]) {
+                    /* Rehash entries for this CPU */
+                    for (uint32_t j = 0; j < old_pch->max_entries; j++) {
+                        uint8_t *old_bucket = old_pch->buckets[cpu] + j * old_bucket_size;
+                        if (old_bucket[0] != 1) continue;
+
+                        uint8_t *key = old_bucket + 1;
+                        uint8_t *value = old_bucket + 1 + old_pch->key_size;
+
+                        uint32_t h = 2166136261u;
+                        for (uint32_t k = 0; k < old_pch->key_size; k++) {
+                            h ^= key[k];
+                            h *= 16777619u;
+                        }
+
+                        for (uint32_t probe = 0; probe < new_def->max_entries; probe++) {
+                            uint32_t idx = (h + probe) % new_def->max_entries;
+                            uint8_t *new_bucket = new_pch->buckets[cpu] + idx * new_bucket_size;
+                            if (new_bucket[0] == 0) {
+                                new_bucket[0] = 1;
+                                memcpy(new_bucket + 1, key, old_pch->key_size);
+                                memcpy(new_bucket + 1 + old_pch->key_size, value, old_pch->value_size);
+                                new_pch->counts[cpu]++;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        case MBPF_MAP_TYPE_RING: {
+            /* Ring buffers are event streams - resize buffer but don't preserve data */
+            mbpf_ring_buffer_map_t *new_ring = &new_storage->u.ring;
+            const mbpf_ring_buffer_map_t *old_ring = &old_storage->u.ring;
+
+            new_ring->buffer_size = new_def->max_entries;
+            new_ring->max_event_size = old_ring->max_event_size;
+            new_ring->head = 0;
+            new_ring->tail = 0;
+
+            new_ring->buffer = calloc(1, new_def->max_entries);
+            if (!new_ring->buffer) {
+                return -1;
+            }
+            /* Don't copy old ring data - it's an event stream */
+            break;
+        }
+
+        case MBPF_MAP_TYPE_COUNTER: {
+            mbpf_counter_map_t *new_cnt = &new_storage->u.counter;
+            const mbpf_counter_map_t *old_cnt = &old_storage->u.counter;
+
+            new_cnt->max_entries = new_def->max_entries;
+
+            new_cnt->counters = calloc(new_def->max_entries, sizeof(int64_t));
+            if (!new_cnt->counters) {
+                return -1;
+            }
+
+            /* Copy counters, truncating if smaller */
+            uint32_t copy_entries = old_cnt->max_entries < new_def->max_entries ?
+                                    old_cnt->max_entries : new_def->max_entries;
+            memcpy(new_cnt->counters, old_cnt->counters, copy_entries * sizeof(int64_t));
+            break;
+        }
+
+        default:
+            return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * Update a program to a new version (hot swap).
+ * By default, maps are preserved if the new program's map definitions are
+ * compatible with the old program's maps (same name, type, key_size, value_size).
+ */
+int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
+                        const void *pkg, size_t pkg_len,
+                        const mbpf_update_opts_t *opts) {
+    if (!rt || !prog || !pkg || pkg_len < sizeof(mbpf_file_header_t)) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Verify the program is in this runtime's program list (catches use-after-free) */
+    bool found = false;
+    for (mbpf_program_t *p = rt->programs; p; p = p->next) {
+        if (p == prog) {
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        /* Program was unloaded (freed) or never belonged to this runtime */
+        return MBPF_ERR_ALREADY_UNLOADED;
+    }
+
+    if (prog->runtime != rt) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Program must be detached before update */
+    if (prog->attached) {
+        return MBPF_ERR_STILL_ATTACHED;
+    }
+
+    /* Cannot update an unloaded program (redundant but kept for clarity) */
+    if (prog->unloaded) {
+        return MBPF_ERR_ALREADY_UNLOADED;
+    }
+
+    /* Parse new package header */
+    mbpf_file_header_t header;
+    int err = mbpf_package_parse_header(pkg, pkg_len, &header);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    /* Parse new manifest */
+    const void *manifest_data;
+    size_t manifest_len;
+    err = mbpf_package_get_section(pkg, pkg_len, MBPF_SEC_MANIFEST,
+                                   &manifest_data, &manifest_len);
+    if (err != MBPF_OK) {
+        return MBPF_ERR_MISSING_SECTION;
+    }
+
+    mbpf_manifest_t new_manifest;
+    memset(&new_manifest, 0, sizeof(new_manifest));
+    err = mbpf_package_parse_manifest(manifest_data, manifest_len, &new_manifest);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    /* Validate heap_size is at least the platform minimum */
+    if (new_manifest.heap_size < MBPF_MIN_HEAP_SIZE) {
+        mbpf_manifest_free(&new_manifest);
+        return MBPF_ERR_HEAP_TOO_SMALL;
+    }
+
+    /* Get new bytecode section */
+    const void *bytecode_data;
+    size_t bytecode_len;
+    err = mbpf_package_get_section(pkg, pkg_len, MBPF_SEC_BYTECODE,
+                                   &bytecode_data, &bytecode_len);
+    if (err != MBPF_OK) {
+        mbpf_manifest_free(&new_manifest);
+        return MBPF_ERR_MISSING_SECTION;
+    }
+
+    /* Determine map policy */
+    uint32_t map_policy = MBPF_MAP_POLICY_PRESERVE;
+    if (opts && opts->map_policy == MBPF_MAP_POLICY_DESTROY) {
+        map_policy = MBPF_MAP_POLICY_DESTROY;
+    }
+
+    /* Check map compatibility if we want to preserve */
+    bool can_preserve_maps = (map_policy == MBPF_MAP_POLICY_PRESERVE);
+
+    if (can_preserve_maps && new_manifest.maps && new_manifest.map_count > 0) {
+        /* Check each new map has a compatible old map */
+        for (uint32_t i = 0; i < new_manifest.map_count; i++) {
+            mbpf_map_def_t *new_def = &new_manifest.maps[i];
+            int old_idx = find_map_by_name(prog, new_def->name);
+            if (old_idx < 0) {
+                /* New map doesn't exist in old program - can't preserve */
+                can_preserve_maps = false;
+                break;
+            }
+            if (!maps_compatible(&prog->maps[old_idx], new_def, prog->instance_count)) {
+                /* Map schema changed - can't preserve */
+                can_preserve_maps = false;
+                break;
+            }
+        }
+    }
+
+    /* Save old maps if we're preserving them */
+    mbpf_map_storage_t *old_maps = NULL;
+    uint32_t old_map_count = 0;
+
+    if (can_preserve_maps) {
+        /* Sync map data from JS to C storage before destroying instances.
+         * For regular maps, we only need instance 0 since they share storage.
+         * For per-CPU maps, each instance has its own storage, so sync all. */
+        if (prog->instances && prog->instance_count > 0) {
+            for (uint32_t i = 0; i < prog->instance_count; i++) {
+                sync_maps_from_js_to_c(&prog->instances[i], prog, i);
+            }
+        }
+
+        old_maps = prog->maps;
+        old_map_count = prog->map_count;
+        prog->maps = NULL;
+        prog->map_count = 0;
+    }
+
+    /* Call mbpf_fini() on all instances before tearing down */
+    if (prog->instances) {
+        for (uint32_t i = 0; i < prog->instance_count; i++) {
+            mbpf_instance_t *inst = &prog->instances[i];
+            if (inst->js_initialized) {
+                call_mbpf_fini_on_instance(inst);
+            }
+        }
+    }
+
+    /* Free old instances */
+    if (prog->instances) {
+        for (uint32_t i = 0; i < prog->instance_count; i++) {
+            free_instance(&prog->instances[i]);
+        }
+        free(prog->instances);
+        prog->instances = NULL;
+    }
+
+    /* Free old maps if not preserving */
+    if (!can_preserve_maps) {
+        free_maps(prog);
+    }
+
+    /* Allocate new bytecode BEFORE freeing old resources.
+     * This ensures the program remains in a consistent state on allocation failure. */
+    void *new_bytecode = malloc(bytecode_len);
+    if (!new_bytecode) {
+        /* Restore old maps on failure */
+        if (old_maps) {
+            prog->maps = old_maps;
+            prog->map_count = old_map_count;
+        }
+        mbpf_manifest_free(&new_manifest);
+        return MBPF_ERR_NO_MEM;
+    }
+    memcpy(new_bytecode, bytecode_data, bytecode_len);
+
+    /* Now free old resources and install new ones */
+    if (prog->bytecode) {
+        free(prog->bytecode);
+    }
+    prog->bytecode = new_bytecode;
+    prog->bytecode_len = bytecode_len;
+
+    /* Free old manifest and install new one */
+    mbpf_manifest_free(&prog->manifest);
+    prog->manifest = new_manifest;
+
+    /* Determine heap size */
+    size_t heap_size = prog->manifest.heap_size;
+    if (heap_size < rt->config.default_heap_size) {
+        heap_size = rt->config.default_heap_size;
+    }
+
+    /* Allocate new instances */
+    prog->instances = calloc(prog->instance_count, sizeof(mbpf_instance_t));
+    if (!prog->instances) {
+        free(prog->bytecode);
+        prog->bytecode = NULL;
+        if (old_maps) {
+            prog->maps = old_maps;
+            prog->map_count = old_map_count;
+        }
+        return MBPF_ERR_NO_MEM;
+    }
+
+    /* Handle map storage */
+    if (can_preserve_maps && old_maps) {
+        /* Restore preserved maps with potentially new map ordering and resizing */
+        prog->map_count = prog->manifest.map_count;
+        /* Handle zero maps case: calloc(0, size) may return NULL or a unique pointer.
+         * Only treat NULL as failure when map_count > 0. */
+        if (prog->map_count > 0) {
+            prog->maps = calloc(prog->map_count, sizeof(mbpf_map_storage_t));
+            if (!prog->maps) {
+                free(prog->instances);
+                prog->instances = NULL;
+                free(prog->bytecode);
+                prog->bytecode = NULL;
+                /* Restore old maps temporarily just to free them properly */
+                prog->maps = old_maps;
+                prog->map_count = old_map_count;
+                free_maps(prog);
+                return MBPF_ERR_NO_MEM;
+            }
+        } else {
+            prog->maps = NULL;
+        }
+
+        /* Track which old maps were used so we can free the rest */
+        bool *old_map_used = NULL;
+        if (old_map_count > 0) {
+            old_map_used = calloc(old_map_count, sizeof(bool));
+            if (!old_map_used) {
+                free(prog->maps);
+                prog->maps = old_maps;
+                prog->map_count = old_map_count;
+                free_maps(prog);
+                free(prog->instances);
+                prog->instances = NULL;
+                free(prog->bytecode);
+                prog->bytecode = NULL;
+                return MBPF_ERR_NO_MEM;
+            }
+        }
+
+        /* Copy and resize compatible maps from old storage to new positions */
+        for (uint32_t i = 0; i < prog->map_count; i++) {
+            mbpf_map_def_t *new_def = &prog->manifest.maps[i];
+            int old_idx = -1;
+
+            /* Find the old map with this name */
+            for (uint32_t j = 0; j < old_map_count; j++) {
+                if (strncmp(old_maps[j].name, new_def->name,
+                            sizeof(old_maps[j].name)) == 0) {
+                    old_idx = (int)j;
+                    break;
+                }
+            }
+
+            if (old_idx >= 0) {
+                /* Resize and copy map data using new max_entries */
+                if (resize_map_storage(&prog->maps[i], &old_maps[old_idx],
+                                       new_def, prog->instance_count) != 0) {
+                    /* Cleanup on failure */
+                    for (uint32_t k = 0; k < i; k++) {
+                        /* Free already-allocated new maps */
+                        mbpf_map_storage_t *s = &prog->maps[k];
+                        if (s->type == MBPF_MAP_TYPE_ARRAY) {
+                            free(s->u.array.values);
+                            free(s->u.array.valid);
+                        } else if (s->type == MBPF_MAP_TYPE_HASH) {
+                            free(s->u.hash.buckets);
+                        } else if (s->type == MBPF_MAP_TYPE_LRU) {
+                            free(s->u.lru_hash.buckets);
+                        } else if (s->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
+                            for (uint32_t cpu = 0; cpu < s->u.percpu_array.num_cpus; cpu++) {
+                                free(s->u.percpu_array.values[cpu]);
+                                free(s->u.percpu_array.valid[cpu]);
+                            }
+                            free(s->u.percpu_array.values);
+                            free(s->u.percpu_array.valid);
+                        } else if (s->type == MBPF_MAP_TYPE_PERCPU_HASH) {
+                            for (uint32_t cpu = 0; cpu < s->u.percpu_hash.num_cpus; cpu++) {
+                                free(s->u.percpu_hash.buckets[cpu]);
+                            }
+                            free(s->u.percpu_hash.buckets);
+                            free(s->u.percpu_hash.counts);
+                        } else if (s->type == MBPF_MAP_TYPE_RING) {
+                            free(s->u.ring.buffer);
+                        } else if (s->type == MBPF_MAP_TYPE_COUNTER) {
+                            free(s->u.counter.counters);
+                        }
+                    }
+                    free(prog->maps);
+                    prog->maps = old_maps;
+                    prog->map_count = old_map_count;
+                    free_maps(prog);
+                    free(old_map_used);
+                    free(prog->instances);
+                    prog->instances = NULL;
+                    free(prog->bytecode);
+                    prog->bytecode = NULL;
+                    return MBPF_ERR_NO_MEM;
+                }
+                old_map_used[old_idx] = true;
+            }
+        }
+
+        /* Free old maps (all of them - new storage was allocated in resize_map_storage) */
+        for (uint32_t i = 0; i < old_map_count; i++) {
+            mbpf_map_storage_t *storage = &old_maps[i];
+            if (storage->type == MBPF_MAP_TYPE_ARRAY && storage->u.array.values) {
+                free(storage->u.array.values);
+                free(storage->u.array.valid);
+            } else if (storage->type == MBPF_MAP_TYPE_HASH && storage->u.hash.buckets) {
+                free(storage->u.hash.buckets);
+            } else if (storage->type == MBPF_MAP_TYPE_LRU && storage->u.lru_hash.buckets) {
+                free(storage->u.lru_hash.buckets);
+            } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY && storage->u.percpu_array.values) {
+                for (uint32_t cpu = 0; cpu < storage->u.percpu_array.num_cpus; cpu++) {
+                    free(storage->u.percpu_array.values[cpu]);
+                    free(storage->u.percpu_array.valid[cpu]);
+                }
+                free(storage->u.percpu_array.values);
+                free(storage->u.percpu_array.valid);
+            } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH && storage->u.percpu_hash.buckets) {
+                for (uint32_t cpu = 0; cpu < storage->u.percpu_hash.num_cpus; cpu++) {
+                    free(storage->u.percpu_hash.buckets[cpu]);
+                }
+                free(storage->u.percpu_hash.buckets);
+                free(storage->u.percpu_hash.counts);
+            } else if (storage->type == MBPF_MAP_TYPE_RING && storage->u.ring.buffer) {
+                free(storage->u.ring.buffer);
+            } else if (storage->type == MBPF_MAP_TYPE_COUNTER && storage->u.counter.counters) {
+                free(storage->u.counter.counters);
+            }
+        }
+        free(old_maps);
+        free(old_map_used);
+    } else {
+        /* Create fresh maps from new manifest */
+        if (create_maps_from_manifest(prog, prog->instance_count) != 0) {
+            free(prog->instances);
+            prog->instances = NULL;
+            free(prog->bytecode);
+            prog->bytecode = NULL;
+            return MBPF_ERR_NO_MEM;
+        }
+    }
+
+    /* Create new instances */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        err = create_instance(prog, i, heap_size, bytecode_data, bytecode_len);
+        if (err != MBPF_OK) {
+            for (uint32_t j = 0; j < i; j++) {
+                free_instance(&prog->instances[j]);
+            }
+            free(prog->instances);
+            prog->instances = NULL;
+            free(prog->bytecode);
+            prog->bytecode = NULL;
+            free_maps(prog);
+            return err;
+        }
+    }
+
+    /* Update bc_info */
+    mbpf_bytecode_check(prog->bytecode, prog->bytecode_len, &prog->bc_info);
+
+    /* Set up maps object in each instance's JS context */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        if (setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
+            for (uint32_t j = 0; j < prog->instance_count; j++) {
+                free_instance(&prog->instances[j]);
+            }
+            free(prog->instances);
+            prog->instances = NULL;
+            free(prog->bytecode);
+            prog->bytecode = NULL;
+            free_maps(prog);
+            return MBPF_ERR_NO_MEM;
+        }
+    }
+
+    /* If we preserved maps, sync the C storage data to the new JS arrays */
+    if (can_preserve_maps) {
+        for (uint32_t i = 0; i < prog->instance_count; i++) {
+            sync_maps_from_c_to_js(&prog->instances[i], prog, i);
+        }
+    }
+
+    /* Call mbpf_init() on all instances */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        err = call_mbpf_init_on_instance(&prog->instances[i]);
+        if (err != MBPF_OK) {
+            for (uint32_t j = 0; j < prog->instance_count; j++) {
+                free_instance(&prog->instances[j]);
+            }
+            free(prog->instances);
+            prog->instances = NULL;
+            free(prog->bytecode);
+            prog->bytecode = NULL;
+            free_maps(prog);
+            return err;
+        }
+    }
 
     return MBPF_OK;
 }
