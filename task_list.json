@@ -687,7 +687,7 @@
       "Verify load fails with appropriate error",
       "Document platform minimum heap size"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "capability-enforcement",

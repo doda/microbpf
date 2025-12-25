@@ -410,6 +410,16 @@ if [ -f build/test_budget_interrupt_handler ]; then
     fi
 fi
 
+# Run memory minimum heap tests
+if [ -f build/test_memory_minimum_heap ]; then
+    ./build/test_memory_minimum_heap
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Memory minimum heap tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

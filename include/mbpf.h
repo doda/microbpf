@@ -23,7 +23,18 @@ extern "C" {
 
 #define MBPF_API_VERSION ((MBPF_VERSION_MAJOR << 16) | MBPF_VERSION_MINOR)
 
-/* Platform minimum heap size (8KB) - MQuickJS needs space for stdlib and basic operations */
+/*
+ * Platform minimum heap size: 8192 bytes (8KB)
+ *
+ * This minimum is required because MQuickJS needs sufficient space for:
+ * - Standard library initialization
+ * - Basic JS heap operations and object allocation
+ * - Runtime context objects
+ * - Program bytecode loading
+ *
+ * Programs with heap_size < MBPF_MIN_HEAP_SIZE will fail to load
+ * with error code MBPF_ERR_HEAP_TOO_SMALL (-18).
+ */
 #define MBPF_MIN_HEAP_SIZE 8192
 
 /* Forward declarations */

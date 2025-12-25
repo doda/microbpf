@@ -80,3 +80,4 @@ exception-handling: reviewed exception defaults and tests
 budget-max-wall-time: reviewed and fixed wall time elapsed calculation
 2025-12-25 budget-interrupt-handler: added interrupt handler budget enforcement tests.
 2025-12-25 memory-heap-size: verified heap OOM handling and added tests.
+2025-12-25 memory-minimum-heap: verified minimum heap rejection and added tests.
