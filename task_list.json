@@ -833,7 +833,7 @@
       "Verify invocations are dropped (not blocking)",
       "Verify per-program/per-hook drop counter is incremented"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "deferred-context-snapshot",

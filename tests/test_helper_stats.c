@@ -160,7 +160,8 @@ static uint8_t *compile_js_to_bytecode(const char *js_code, size_t *out_len) {
     "    exceptions: [0, 0],\n" \
     "    oom_errors: [0, 0],\n" \
     "    budget_exceeded: [0, 0],\n" \
-    "    nested_dropped: [0, 0]\n" \
+    "    nested_dropped: [0, 0],\n" \
+    "    deferred_dropped: [0, 0]\n" \
     "};\n"
 
 /* ============================================================================

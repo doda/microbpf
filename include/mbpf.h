@@ -180,6 +180,7 @@ typedef struct mbpf_stats {
     uint64_t oom_errors;
     uint64_t budget_exceeded;
     uint64_t nested_dropped;
+    uint64_t deferred_dropped;        /* Invocations dropped due to deferred queue full */
     uint64_t circuit_breaker_trips;   /* Times circuit breaker was tripped */
     uint64_t circuit_breaker_skipped; /* Invocations skipped due to open circuit */
 } mbpf_stats_t;

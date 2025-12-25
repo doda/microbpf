@@ -787,7 +787,8 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
                 "exceptions:[0,0],"
                 "oom_errors:[0,0],"
                 "budget_exceeded:[0,0],"
-                "nested_dropped:[0,0]"
+                "nested_dropped:[0,0],"
+                "deferred_dropped:[0,0]"
             "};"
             : "",
         api_version,
@@ -868,12 +869,15 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
                     "throw new TypeError('out.budget_exceeded must be array of length 2');"
                 "if(!Array.isArray(out.nested_dropped)||out.nested_dropped.length<2)"
                     "throw new TypeError('out.nested_dropped must be array of length 2');"
+                "if(!Array.isArray(out.deferred_dropped)||out.deferred_dropped.length<2)"
+                    "throw new TypeError('out.deferred_dropped must be array of length 2');"
                 "out.invocations[0]=s.invocations[0];out.invocations[1]=s.invocations[1];"
                 "out.successes[0]=s.successes[0];out.successes[1]=s.successes[1];"
                 "out.exceptions[0]=s.exceptions[0];out.exceptions[1]=s.exceptions[1];"
                 "out.oom_errors[0]=s.oom_errors[0];out.oom_errors[1]=s.oom_errors[1];"
                 "out.budget_exceeded[0]=s.budget_exceeded[0];out.budget_exceeded[1]=s.budget_exceeded[1];"
                 "out.nested_dropped[0]=s.nested_dropped[0];out.nested_dropped[1]=s.nested_dropped[1];"
+                "out.deferred_dropped[0]=s.deferred_dropped[0];out.deferred_dropped[1]=s.deferred_dropped[1];"
             "}"
             : "");
 
@@ -5529,14 +5533,15 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     /* Update _mbpf_stats if CAP_STATS is granted.
      * This provides the current program stats to mbpf.stats(). */
     if (prog->manifest.capabilities & MBPF_CAP_STATS) {
-        char stats_code[512];
+        char stats_code[600];
         snprintf(stats_code, sizeof(stats_code),
             "_mbpf_stats.invocations[0]=%u;_mbpf_stats.invocations[1]=%u;"
             "_mbpf_stats.successes[0]=%u;_mbpf_stats.successes[1]=%u;"
             "_mbpf_stats.exceptions[0]=%u;_mbpf_stats.exceptions[1]=%u;"
             "_mbpf_stats.oom_errors[0]=%u;_mbpf_stats.oom_errors[1]=%u;"
             "_mbpf_stats.budget_exceeded[0]=%u;_mbpf_stats.budget_exceeded[1]=%u;"
-            "_mbpf_stats.nested_dropped[0]=%u;_mbpf_stats.nested_dropped[1]=%u;",
+            "_mbpf_stats.nested_dropped[0]=%u;_mbpf_stats.nested_dropped[1]=%u;"
+            "_mbpf_stats.deferred_dropped[0]=%u;_mbpf_stats.deferred_dropped[1]=%u;",
             (uint32_t)(prog->stats.invocations & 0xFFFFFFFFULL),
             (uint32_t)(prog->stats.invocations >> 32),
             (uint32_t)(prog->stats.successes & 0xFFFFFFFFULL),
@@ -5548,7 +5553,9 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
             (uint32_t)(prog->stats.budget_exceeded & 0xFFFFFFFFULL),
             (uint32_t)(prog->stats.budget_exceeded >> 32),
             (uint32_t)(prog->stats.nested_dropped & 0xFFFFFFFFULL),
-            (uint32_t)(prog->stats.nested_dropped >> 32));
+            (uint32_t)(prog->stats.nested_dropped >> 32),
+            (uint32_t)(prog->stats.deferred_dropped & 0xFFFFFFFFULL),
+            (uint32_t)(prog->stats.deferred_dropped >> 32));
         JSValue stats_result = JS_Eval(ctx, stats_code, strlen(stats_code),
                                         "<stats>", 0);
         if (JS_IsException(stats_result)) {
@@ -6411,9 +6418,16 @@ int mbpf_queue_invocation(mbpf_deferred_queue_t *queue,
         return MBPF_ERR_INVALID_ARG;
     }
 
-    /* Check if queue is full */
+    /* Check if queue is full - backpressure: drop and count per-program */
     if (queue->count >= queue->max_entries) {
         __atomic_add_fetch(&queue->dropped, 1, __ATOMIC_RELAXED);
+        /* Increment per-program deferred_dropped counter for all programs
+         * attached to this hook */
+        for (mbpf_program_t *prog = rt->programs; prog; prog = prog->next) {
+            if (!prog->unloaded && prog->attached && prog->attached_hook == hook) {
+                __atomic_add_fetch(&prog->stats.deferred_dropped, 1, __ATOMIC_RELAXED);
+            }
+        }
         return MBPF_ERR_NO_MEM;
     }
 

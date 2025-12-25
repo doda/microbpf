@@ -448,7 +448,8 @@ TEST(stats_uses_preallocated_output) {
     const char *js_code =
         "var _statsOut = {\n"
         "    invocations: [0, 0], successes: [0, 0], exceptions: [0, 0],\n"
-        "    oom_errors: [0, 0], budget_exceeded: [0, 0], nested_dropped: [0, 0]\n"
+        "    oom_errors: [0, 0], budget_exceeded: [0, 0], nested_dropped: [0, 0],\n"
+        "    deferred_dropped: [0, 0]\n"
         "};\n"
         "function mbpf_prog(ctx) {\n"
         "    var result = mbpf.stats(_statsOut);\n"
