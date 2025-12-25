@@ -2107,6 +2107,43 @@ static int32_t get_exception_default(mbpf_runtime_t *rt, mbpf_hook_type_t hook_t
 }
 
 /*
+ * Check if an exception is an out-of-memory error.
+ * Returns true if the exception is an OOM error, false otherwise.
+ *
+ * Note: We intentionally do NOT treat JS_NULL as OOM, because a user can
+ * explicitly `throw null` which would be misclassified. MQuickJS only throws
+ * JS_NULL when OOM occurs while already handling an OOM (extremely rare).
+ * For normal OOM cases, MQuickJS creates an Error with "out of memory" message.
+ */
+static bool is_oom_exception(JSContext *ctx, JSValue exc) {
+    /* User-thrown null/undefined should not be treated as OOM */
+    if (JS_IsNull(exc) || JS_IsUndefined(exc)) {
+        return false;
+    }
+
+    /* Check for "out of memory" message - MQuickJS throws this as various error types
+     * (InternalError, Error, etc.) depending on the context */
+    JSValue msg = JS_GetPropertyStr(ctx, exc, "message");
+    if (JS_IsException(msg)) {
+        JS_GetException(ctx);  /* Clear exception from property access */
+        return false;
+    }
+    if (!JS_IsUndefined(msg)) {
+        JSCStringBuf buf;
+        const char *str = JS_ToCString(ctx, msg, &buf);
+        if (!str) {
+            JS_GetException(ctx);  /* Clear exception from toString */
+            return false;
+        }
+        if (strstr(str, "out of memory") != NULL) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/*
  * Sync map data from JS arrays back to C storage.
  * This is used before destroying JS instances to preserve map data.
  * Syncs array, hash, LRU, and per-CPU maps. Ring buffers and counters are not synced
@@ -5159,6 +5196,18 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     JSValue result = JS_Call(ctx, 1);  /* 1 argument */
 
     if (JS_IsException(result)) {
+        /* Get the exception to determine its type */
+        JSValue exc = JS_GetException(ctx);
+
+        /* Check if this is an out-of-memory error first */
+        if (is_oom_exception(ctx, exc)) {
+            prog->stats.oom_errors++;
+            *out_rc = exception_default;
+            mbpf_clear_log_context();
+            __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
+            return MBPF_OK;
+        }
+
         /* Check if this exception was due to budget exceeded (step or helper) */
         bool helper_budget_exceeded = false;
         if (inst->max_helpers > 0) {
@@ -5172,7 +5221,6 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         } else {
             prog->stats.exceptions++;
         }
-        JS_GetException(ctx);  /* Clear the exception */
         *out_rc = exception_default;
         mbpf_clear_log_context();
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
