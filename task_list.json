@@ -895,7 +895,7 @@
       "Verify filesystem APIs are not available",
       "Verify network APIs are not available"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "toolchain-js-compile",

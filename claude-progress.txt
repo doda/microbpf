@@ -97,3 +97,4 @@ budget-max-wall-time: reviewed and fixed wall time elapsed calculation
 2025-12-25 global-mbpf-object: reviewed global mbpf object helpers and tests.
 2025-12-25 global-maps-object: reviewed global maps object tests.
 2025-12-25 global-console-debug: reviewed console.log debug gating and tests.
+disallowed-globals: disabled Function/eval globals and added security tests.

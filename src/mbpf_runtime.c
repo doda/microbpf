@@ -2865,6 +2865,60 @@ static int validate_entry_function(JSContext *ctx, const char *entry_symbol) {
 }
 
 /*
+ * Disable dangerous global APIs for security.
+ *
+ * This function removes or disables potentially dangerous JavaScript globals:
+ * - Function constructor: Can dynamically create functions from strings
+ * - eval: Can execute arbitrary code strings
+ *
+ * Note: MQuickJS is a minimal JS engine and does not include:
+ * - Filesystem APIs (no 'fs', 'require', etc.)
+ * - Network APIs (no 'fetch', 'XMLHttpRequest', 'WebSocket', etc.)
+ * - Other Node.js or browser-specific APIs
+ *
+ * The load(), setTimeout(), and clearTimeout() functions are already
+ * stubbed to throw errors in mbpf_stdlib.c.
+ */
+static void disable_dangerous_globals(JSContext *ctx) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsUndefined(global) || JS_IsException(global)) {
+        JS_FreeValue(ctx, global);
+        return;
+    }
+
+    /* Clear Function.prototype.constructor to prevent indirect access via
+     * (function(){}).constructor. */
+    JSValue function_ctor = JS_GetPropertyStr(ctx, global, "Function");
+    if (!JS_IsUndefined(function_ctor) && !JS_IsException(function_ctor)) {
+        JSValue function_proto = JS_GetPropertyStr(ctx, function_ctor, "prototype");
+        if (!JS_IsUndefined(function_proto) && !JS_IsException(function_proto)) {
+            JS_SetPropertyStr(ctx, function_proto, "constructor", JS_UNDEFINED);
+        }
+        JS_FreeValue(ctx, function_proto);
+    }
+    JS_FreeValue(ctx, function_ctor);
+
+    /* Disable Function constructor by setting it to undefined.
+     * This prevents code like: new Function('return 1')()
+     * or Function('x', 'return x*2') */
+    JS_SetPropertyStr(ctx, global, "Function", JS_UNDEFINED);
+
+    /* Disable eval by setting it to undefined.
+     * This prevents code like: eval('1+1') */
+    JS_SetPropertyStr(ctx, global, "eval", JS_UNDEFINED);
+
+    /* Note: The following are already not available in MQuickJS stdlib:
+     * - require (no module system)
+     * - process (no Node.js globals)
+     * - fs, path, http, etc. (no Node.js modules)
+     * - fetch, XMLHttpRequest (no browser APIs)
+     * - WebSocket (no network APIs)
+     * These would need explicit stub functions if we wanted to throw
+     * informative errors, but they simply don't exist. */
+    JS_FreeValue(ctx, global);
+}
+
+/*
  * Create a single instance for a program.
  * Each instance has its own heap, JS context, and loaded bytecode.
  */
@@ -2896,6 +2950,10 @@ static int create_instance(mbpf_program_t *prog, uint32_t idx, size_t heap_size,
 
     /* Set up interrupt handler for step budget enforcement */
     JS_SetInterruptHandler(inst->js_ctx, mbpf_interrupt_handler);
+
+    /* Disable dangerous globals (Function constructor, eval) for security.
+     * This must happen after context creation but before loading bytecode. */
+    disable_dangerous_globals(inst->js_ctx);
 
     /* In non-debug mode, disable console.log by setting console to undefined.
      * The spec says: "console.log mapped to mbpf.log() in debug builds only."
