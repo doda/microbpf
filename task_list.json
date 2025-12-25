@@ -942,7 +942,7 @@
       "Append MBPF_SEC_SIG section with signature",
       "Verify signed package can be loaded"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "observability-counters",

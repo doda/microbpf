@@ -1,11 +1,11 @@
 /*
- * Ed25519 signature verification (verify-only, from TweetNaCl)
+ * Ed25519 signature implementation (from TweetNaCl)
  *
- * This is a minimal Ed25519 verification implementation derived from
- * TweetNaCl (https://tweetnacl.cr.yp.to/). The original code is in the
+ * This is an Ed25519 implementation derived from TweetNaCl
+ * (https://tweetnacl.cr.yp.to/). The original code is in the
  * public domain and was written by Daniel J. Bernstein, et al.
  *
- * This subset is verify-only to minimize code size for embedded use.
+ * Includes both signing and verification for toolchain use.
  */
 
 #include "ed25519.h"
@@ -483,4 +483,112 @@ int ed25519_verify(const uint8_t *sig, const uint8_t *m, size_t n,
 
     /* Compare with R = sig[0:32] */
     return verify32(sig, t);
+}
+
+/*
+ * Ed25519 keypair generation and signing
+ */
+
+/*
+ * Generate Ed25519 keypair from a 32-byte seed.
+ * The secret_key output is 64 bytes: SHA512(seed)[0:32] clamped, then public key.
+ * Actually, we follow TweetNaCl convention: secret_key = seed || public_key.
+ */
+int ed25519_keypair_from_seed(uint8_t *public_key, uint8_t *secret_key,
+                               const uint8_t *seed) {
+    uint8_t h[64];
+    gf p[4];
+    sha512_ctx ctx;
+
+    /* Hash the seed to get the secret scalar */
+    sha512_init(&ctx);
+    sha512_update(&ctx, seed, 32);
+    sha512_final(&ctx, h);
+
+    /* Clamp the scalar */
+    h[0] &= 0xf8;
+    h[31] &= 0x7f;
+    h[31] |= 0x40;
+
+    /* Compute public key = scalar * basepoint */
+    scalarbase(p, h);
+    pack(public_key, p);
+
+    /* Store seed || public_key as the secret key */
+    memcpy(secret_key, seed, 32);
+    memcpy(secret_key + 32, public_key, 32);
+
+    return 0;
+}
+
+/*
+ * Sign a message with Ed25519.
+ *
+ * Algorithm (RFC 8032):
+ *   1. h = SHA512(seed)
+ *   2. s = h[0:32] clamped (secret scalar)
+ *   3. prefix = h[32:64]
+ *   4. r = SHA512(prefix || message) mod L
+ *   5. R = r * B
+ *   6. k = SHA512(R || public_key || message) mod L
+ *   7. S = (r + k * s) mod L
+ *   8. signature = R || S
+ */
+int ed25519_sign(uint8_t *signature, const uint8_t *message, size_t message_len,
+                 const uint8_t *secret_key) {
+    uint8_t h[64];
+    uint8_t r_hash[64];
+    uint8_t k_hash[64];
+    int64_t x[64];
+    gf p[4];
+    sha512_ctx ctx;
+
+    /* Extract seed and public key from secret_key */
+    const uint8_t *seed = secret_key;
+    const uint8_t *public_key = secret_key + 32;
+
+    /* Hash the seed */
+    sha512_init(&ctx);
+    sha512_update(&ctx, seed, 32);
+    sha512_final(&ctx, h);
+
+    /* Clamp the secret scalar s = h[0:32] */
+    h[0] &= 0xf8;
+    h[31] &= 0x7f;
+    h[31] |= 0x40;
+
+    /* r = SHA512(h[32:64] || message) mod L */
+    sha512_init(&ctx);
+    sha512_update(&ctx, h + 32, 32);  /* prefix */
+    sha512_update(&ctx, message, message_len);
+    sha512_final(&ctx, r_hash);
+    reduce(r_hash);
+
+    /* R = r * B */
+    scalarbase(p, r_hash);
+    pack(signature, p);  /* signature[0:32] = R */
+
+    /* k = SHA512(R || public_key || message) mod L */
+    sha512_init(&ctx);
+    sha512_update(&ctx, signature, 32);  /* R */
+    sha512_update(&ctx, public_key, 32);
+    sha512_update(&ctx, message, message_len);
+    sha512_final(&ctx, k_hash);
+    reduce(k_hash);
+
+    /* S = (r + k * s) mod L */
+    for (int i = 0; i < 64; i++) {
+        x[i] = 0;
+    }
+    for (int i = 0; i < 32; i++) {
+        x[i] = (uint64_t)r_hash[i];
+    }
+    for (int i = 0; i < 32; i++) {
+        for (int j = 0; j < 32; j++) {
+            x[i + j] += (int64_t)k_hash[i] * (int64_t)h[j];
+        }
+    }
+    modL(signature + 32, x);  /* signature[32:64] = S */
+
+    return 0;
 }
