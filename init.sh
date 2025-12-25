@@ -510,6 +510,16 @@ if [ -f build/test_observability_counters ]; then
     fi
 fi
 
+# Run ROM-resident stdlib tests
+if [ -f build/test_rom_stdlib ]; then
+    ./build/test_rom_stdlib
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: ROM-resident stdlib tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

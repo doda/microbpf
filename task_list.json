@@ -1038,7 +1038,7 @@
       "Verify fast initialization (no RAM-based table copying)",
       "Measure RAM usage reduction"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "no-dynamic-alloc-runtime",

@@ -109,3 +109,4 @@ toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL 
 2025-12-25 target-endianness: reviewed target endianness enforcement and tests.
 2025-12-25 example-net-rx-filter: reviewed example NET_RX filter test coverage and integration.
 2025-12-25 u64-representation: reviewed u64 [lo, hi] representation tests.
+2025-12-25 rom-resident-stdlib: reviewed ROM-resident stdlib tests and integration.
