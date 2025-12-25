@@ -175,6 +175,8 @@ struct mbpf_instance {
     uint32_t max_steps;         /* Maximum steps allowed per invocation */
     volatile uint32_t steps_remaining; /* Steps remaining in current invocation */
     volatile int budget_exceeded; /* Flag set when budget is exceeded */
+    /* Helper budget tracking for max_helpers enforcement */
+    uint32_t max_helpers;       /* Maximum helper calls allowed per invocation */
 };
 
 /* Internal structures */
@@ -618,9 +620,11 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
         "%s"  /* CAP_TIME: create _mbpf_time_ns array */
         "%s"  /* CAP_EMIT: create _mbpf_emit_* state */
         "%s"  /* CAP_STATS: create _mbpf_stats object */
+        "var ch=function(){if(typeof _checkHelper==='function')_checkHelper();};"
         "globalThis.mbpf={"
         "apiVersion:%u,"
         "log:function(level,msg){"
+            "ch();"
             "if(typeof level!=='number')level=1;"
             "if(level<0)level=0;"
             "if(level>3)level=3;"
@@ -628,6 +632,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
             "console.log('['+levelNames[level]+'] '+String(msg));"
         "},"
         "u64LoadLE:function(bytes,offset,out){"
+            "ch();"
             "if(!(bytes instanceof Uint8Array))throw new TypeError('bytes must be Uint8Array');"
             "if(typeof offset!=='number')throw new TypeError('offset must be number');"
             "if(!Array.isArray(out)||out.length<2)throw new TypeError('out must be array of length 2');"
@@ -637,6 +642,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
             "out[0]=lo;out[1]=hi;"
         "},"
         "u64StoreLE:function(bytes,offset,value){"
+            "ch();"
             "if(!(bytes instanceof Uint8Array))throw new TypeError('bytes must be Uint8Array');"
             "if(typeof offset!=='number')throw new TypeError('offset must be number');"
             "if(!Array.isArray(value)||value.length<2)throw new TypeError('value must be array of length 2');"
@@ -675,6 +681,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
         has_cap_time ?
             ","
             "nowNs:function(out){"
+                "ch();"
                 "if(!Array.isArray(out)||out.length<2)throw new TypeError('out must be array of length 2');"
                 "out[0]=_mbpf_time_ns[0];out[1]=_mbpf_time_ns[1];"
             "}"
@@ -682,6 +689,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
         has_cap_emit ?
             ","
             "emit:function(eventId,bytes){"
+                "ch();"
                 "if(typeof eventId!=='number')throw new TypeError('eventId must be a number');"
                 "if(!(bytes instanceof Uint8Array))throw new TypeError('bytes must be Uint8Array');"
                 "var dataLen=bytes.length;"
@@ -719,6 +727,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
         has_cap_stats ?
             ","
             "stats:function(){"
+                "ch();"
                 /* Returns a new object with the current stats values.
                  * Each value is a fresh [lo, hi] array (copy, not reference). */
                 "var s=_mbpf_stats;"
@@ -734,6 +743,43 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
             : "");
 
     JSValue result = JS_Eval(ctx, code, strlen(code), "<mbpf>", JS_EVAL_RETVAL);
+    if (JS_IsException(result)) {
+        JS_GetException(ctx);
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * Set up helper budget tracking globals in the JS context.
+ * Creates _helperCount, _maxHelpers, and _checkHelper() function.
+ * _checkHelper() should be called at the start of each helper function;
+ * it increments the count and throws if the budget is exceeded.
+ * The instance pointer is stored in the context opaque for the check function.
+ */
+static int setup_helper_tracking(JSContext *ctx, uint32_t max_helpers) {
+    /* If max_helpers is 0, don't enforce limit */
+    if (max_helpers == 0) {
+        return 0;
+    }
+
+    char code[512];
+    snprintf(code, sizeof(code),
+        "(function(){"
+        "globalThis._helperCount=0;"
+        "globalThis._maxHelpers=%u;"
+        "globalThis._helperBudgetExceeded=false;"
+        "globalThis._checkHelper=function(){"
+            "if(++_helperCount>_maxHelpers){"
+                "_helperBudgetExceeded=true;"
+                "throw new Error('helper budget exceeded');"
+            "}"
+        "};"
+        "})()",
+        max_helpers);
+
+    JSValue result = JS_Eval(ctx, code, strlen(code), "<helper_tracking>", JS_EVAL_RETVAL);
     if (JS_IsException(result)) {
         JS_GetException(ctx);
         return -1;
@@ -779,6 +825,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
     /* Start the setup IIFE */
     written = snprintf(p, remaining,
         "(function(){"
+        "var ch=function(){if(typeof _checkHelper==='function')_checkHelper();};"
         "var maps={};"
         "var _mapData=[];"  /* Will hold arrays for each map */
         "var _mapValid=[];");  /* Will hold validity arrays */
@@ -805,6 +852,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
             written = snprintf(p, remaining,
                 "maps['%s']={"
                 "lookup:function(idx,outBuf){"
+                    "ch();"
                     "if(typeof idx!=='number')throw new TypeError('index must be a number');"
                     "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
                     "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
@@ -815,6 +863,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "return true;"
                 "},"
                 "update:function(idx,valueBuf){"
+                    "ch();"
                     "if(typeof idx!=='number')throw new TypeError('index must be a number');"
                     "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
                     "if(!(valueBuf instanceof Uint8Array))throw new TypeError('valueBuffer must be Uint8Array');"
@@ -877,6 +926,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "return{"
                 /* lookup(keyBuffer, outBuffer) - returns true if found, copies value to outBuffer */
                 "lookup:function(keyBuf,outBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
@@ -896,6 +946,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* update(keyBuffer, valueBuffer) - inserts or updates, returns true on success */
                 "update:function(keyBuf,valueBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "if(!(valueBuf instanceof Uint8Array))throw new TypeError('value must be Uint8Array');"
@@ -931,6 +982,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* delete(keyBuffer) - removes entry, returns true if found */
                 "delete:function(keyBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "var h=fnv(keyBuf)%%maxE;"
@@ -948,9 +1000,9 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* nextKey(prevKey, outKey) - returns next key after prevKey, false if no more */
                 "nextKey:function(prevKey,outKey){"
+                    "ch();"
                     "if(!(outKey instanceof Uint8Array))throw new TypeError('outKey must be Uint8Array');"
                     "if(outKey.length<kS)throw new RangeError('outKey too small');"
-                    "if(typeof _helperCount!=='undefined')_helperCount++;"  /* Count toward budget */
                     "var start=0;"
                     "if(prevKey!==null&&prevKey!==undefined){"
                         "if(!(prevKey instanceof Uint8Array))throw new TypeError('prevKey must be null or Uint8Array');"
@@ -1093,6 +1145,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "return{"
                 /* lookup(keyBuffer, outBuffer) - returns true if found, copies value to outBuffer */
                 "lookup:function(keyBuf,outBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
@@ -1113,6 +1166,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* update(keyBuffer, valueBuffer) - inserts or updates, returns true on success */
                 "update:function(keyBuf,valueBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "if(!(valueBuf instanceof Uint8Array))throw new TypeError('value must be Uint8Array');"
@@ -1162,6 +1216,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* delete(keyBuffer) - removes entry, returns true if found */
                 "delete:function(keyBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "var h=fnv(keyBuf)%%maxE;"
@@ -1180,9 +1235,9 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* nextKey(prevKey, outKey) - returns next key after prevKey, false if no more */
                 "nextKey:function(prevKey,outKey){"
+                    "ch();"
                     "if(!(outKey instanceof Uint8Array))throw new TypeError('outKey must be Uint8Array');"
                     "if(outKey.length<kS)throw new RangeError('outKey too small');"
-                    "if(typeof _helperCount!=='undefined')_helperCount++;"  /* Count toward budget */
                     "var start=0;"
                     "if(prevKey!==null&&prevKey!==undefined){"
                         "if(!(prevKey instanceof Uint8Array))throw new TypeError('prevKey must be null or Uint8Array');"
@@ -1236,6 +1291,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
             written = snprintf(p, remaining,
                 "maps['%s']={"
                 "lookup:function(idx,outBuf){"
+                    "ch();"
                     "if(typeof idx!=='number')throw new TypeError('index must be a number');"
                     "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
                     "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
@@ -1246,6 +1302,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "return true;"
                 "},"
                 "update:function(idx,valueBuf){"
+                    "ch();"
                     "if(typeof idx!=='number')throw new TypeError('index must be a number');"
                     "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
                     "if(!(valueBuf instanceof Uint8Array))throw new TypeError('valueBuffer must be Uint8Array');"
@@ -1255,7 +1312,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "_mapValid[%u][idx]=1;"
                     "return true;"
                 "},"
-                "cpuId:function(){return %u;}"  /* Returns this instance's CPU ID */
+                "cpuId:function(){ch();return %u;}"  /* Returns this instance's CPU ID */
                 "};",
                 storage->name,
                 pca->max_entries, pca->value_size,
@@ -1305,6 +1362,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "}"
                 "return{"
                 "lookup:function(keyBuf,outBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
@@ -1322,6 +1380,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "return false;"
                 "},"
                 "update:function(keyBuf,valueBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "if(!(valueBuf instanceof Uint8Array))throw new TypeError('value must be Uint8Array');"
@@ -1355,6 +1414,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "return false;"
                 "},"
                 "delete:function(keyBuf){"
+                    "ch();"
                     "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
                     "if(keyBuf.length<kS)throw new RangeError('key too small');"
                     "var h=fnv(keyBuf)%%maxE;"
@@ -1372,9 +1432,9 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* nextKey(prevKey, outKey) - returns next key after prevKey, false if no more */
                 "nextKey:function(prevKey,outKey){"
+                    "ch();"
                     "if(!(outKey instanceof Uint8Array))throw new TypeError('outKey must be Uint8Array');"
                     "if(outKey.length<kS)throw new RangeError('outKey too small');"
-                    "if(typeof _helperCount!=='undefined')_helperCount++;"  /* Count toward budget */
                     "var start=0;"
                     "if(prevKey!==null&&prevKey!==undefined){"
                         "if(!(prevKey instanceof Uint8Array))throw new TypeError('prevKey must be null or Uint8Array');"
@@ -1399,7 +1459,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "}"
                     "return false;"
                 "},"
-                "cpuId:function(){return %u;}"
+                "cpuId:function(){ch();return %u;}"
                 "};"
                 "})();",
                 storage->name,
@@ -1465,6 +1525,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "return{"
                 /* submit(eventData) - write event to ring buffer */
                 "submit:function(eventData){"
+                    "ch();"
                     "if(!(eventData instanceof Uint8Array))throw new TypeError('eventData must be Uint8Array');"
                     "var len=eventData.length;"
                     /* Check if event exceeds max event size (manifest value_size) */
@@ -1489,11 +1550,12 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "return true;"
                 "},"
                 /* count() - return number of events in buffer */
-                "count:function(){return m.eventCount;},"
+                "count:function(){ch();return m.eventCount;},"
                 /* dropped() - return number of dropped events */
-                "dropped:function(){return m.dropped;},"
+                "dropped:function(){ch();return m.dropped;},"
                 /* peek(outBuffer) - read oldest event without removing */
                 "peek:function(outBuf){"
+                    "ch();"
                     "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
                     "if(m.eventCount===0)return 0;"
                     "var len=r32(m.tail);"
@@ -1506,6 +1568,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* consume() - remove oldest event */
                 "consume:function(){"
+                    "ch();"
                     "if(m.eventCount===0)return false;"
                     "var len=r32(m.tail);"
                     "var recordSize=4+len;"
@@ -1568,6 +1631,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "return{"
                 /* add(idx, delta) - accumulate delta for atomic add after run */
                 "add:function(idx,delta){"
+                    "ch();"
                     "if(typeof idx!=='number'||idx<0||idx>=max)throw new RangeError('index out of bounds');"
                     "idx=idx>>>0;"
                     /* Get current accumulated delta and add the new delta */
@@ -1579,6 +1643,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* get(idx) - get current counter value (base + pending delta) */
                 "get:function(idx){"
+                    "ch();"
                     "if(typeof idx!=='number'||idx<0||idx>=max)throw new RangeError('index out of bounds');"
                     "idx=idx>>>0;"
                     /* Combine base value with pending delta */
@@ -1588,6 +1653,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 /* set(idx, value) - record value for post-run assignment */
                 "set:function(idx,value){"
+                    "ch();"
                     "if(typeof idx!=='number'||idx<0||idx>=max)throw new RangeError('index out of bounds');"
                     "idx=idx>>>0;"
                     /* Record set operation (will be applied atomically) */
@@ -1784,6 +1850,7 @@ static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
          * For array maps: keyBytes is ignored, use first element as index
          * For hash/lru maps: keyBytes is the key to look up */
         "mbpf.mapLookup=function(mapId,keyBytes,outValue){"
+            "ch();"
             "if(typeof mapId!=='number')throw new TypeError('mapId must be a number');"
             "if(mapId<0||mapId>=_mapMeta.length)throw new RangeError('mapId out of range');"
             "var m=_mapMeta[mapId],d=_mapData[mapId],v=_mapValid[mapId];"
@@ -1835,6 +1902,7 @@ static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
         /* mapUpdate(mapId, keyBytes, valueBytes, flags)
          * flags: 0=create or update, 1=create only, 2=update only */
         "mbpf.mapUpdate=function(mapId,keyBytes,valueBytes,flags){"
+            "ch();"
             "if(typeof mapId!=='number')throw new TypeError('mapId must be a number');"
             "if(mapId<0||mapId>=_mapMeta.length)throw new RangeError('mapId out of range');"
             "flags=flags||0;"
@@ -1938,6 +2006,7 @@ static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
          * For array maps: keyBytes is numeric index
          * For hash/lru maps: keyBytes is the key to delete */
         "mbpf.mapDelete=function(mapId,keyBytes){"
+            "ch();"
             "if(typeof mapId!=='number')throw new TypeError('mapId must be a number');"
             "if(mapId<0||mapId>=_mapMeta.length)throw new RangeError('mapId out of range');"
             "var m=_mapMeta[mapId],d=_mapData[mapId],v=_mapValid[mapId];"
@@ -2582,6 +2651,14 @@ static int create_instance(mbpf_program_t *prog, uint32_t idx, size_t heap_size,
     inst->steps_remaining = max_steps;
     inst->budget_exceeded = 0;
 
+    /* Initialize helper budget from manifest */
+    uint32_t max_helpers = prog->manifest.budgets.max_helpers;
+    /* If manifest doesn't specify, use runtime default */
+    if (max_helpers == 0 && prog->runtime) {
+        max_helpers = prog->runtime->config.default_max_helpers;
+    }
+    inst->max_helpers = max_helpers;
+
     /* Each instance needs its own copy of bytecode for relocation.
      * The bytecode must be kept alive as long as the context exists
      * because JS_LoadBytecode keeps a reference to it. */
@@ -2829,6 +2906,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
         if (setup_mbpf_object(prog->instances[i].js_ctx, prog->manifest.capabilities) != 0 ||
+            setup_helper_tracking(prog->instances[i].js_ctx, prog->instances[i].max_helpers) != 0 ||
             setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0 ||
             setup_lowlevel_map_helpers(prog->instances[i].js_ctx, prog) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
@@ -3741,6 +3819,7 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
     /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
         if (setup_mbpf_object(prog->instances[i].js_ctx, prog->manifest.capabilities) != 0 ||
+            setup_helper_tracking(prog->instances[i].js_ctx, prog->instances[i].max_helpers) != 0 ||
             setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0 ||
             setup_lowlevel_map_helpers(prog->instances[i].js_ctx, prog) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
@@ -4813,6 +4892,14 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_OK;
     }
 
+    /* Reset helper count for this invocation if helper budget is enforced */
+    if (inst->max_helpers > 0) {
+        JSValue reset = JS_Eval(ctx, "_helperCount=0;_helperBudgetExceeded=false;", 43, "<reset>", 0);
+        if (JS_IsException(reset)) {
+            JS_GetException(ctx);  /* Clear exception, non-fatal */
+        }
+    }
+
     /* Sync ring buffer state from C to JS before running.
      * This ensures host-side reads (which modify C state) are reflected in JS. */
     for (uint32_t i = 0; i < prog->map_count; i++) {
@@ -5031,8 +5118,15 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     JSValue result = JS_Call(ctx, 1);  /* 1 argument */
 
     if (JS_IsException(result)) {
-        /* Check if this exception was due to budget exceeded */
-        if (inst->budget_exceeded) {
+        /* Check if this exception was due to budget exceeded (step or helper) */
+        bool helper_budget_exceeded = false;
+        if (inst->max_helpers > 0) {
+            JSValue flag = JS_GetPropertyStr(ctx, global, "_helperBudgetExceeded");
+            if (JS_IsBool(flag)) {
+                helper_budget_exceeded = (flag == JS_TRUE);
+            }
+        }
+        if (inst->budget_exceeded || helper_budget_exceeded) {
             prog->stats.budget_exceeded++;
         } else {
             prog->stats.exceptions++;
@@ -5042,6 +5136,24 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         mbpf_clear_log_context();
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
         return MBPF_OK;
+    }
+
+    /* If budget was exceeded but caught inside JS, enforce fail-safe default */
+    if (inst->budget_exceeded || inst->max_helpers > 0) {
+        bool helper_budget_exceeded = false;
+        if (inst->max_helpers > 0) {
+            JSValue flag = JS_GetPropertyStr(ctx, global, "_helperBudgetExceeded");
+            if (JS_IsBool(flag)) {
+                helper_budget_exceeded = (flag == JS_TRUE);
+            }
+        }
+        if (inst->budget_exceeded || helper_budget_exceeded) {
+            prog->stats.budget_exceeded++;
+            *out_rc = exception_default;
+            mbpf_clear_log_context();
+            __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
+            return MBPF_OK;
+        }
     }
 
     /* Convert result to int32 */

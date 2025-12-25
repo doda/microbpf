@@ -639,7 +639,7 @@
       "Verify helper count includes all helper types",
       "Verify safe default returned on limit exceeded"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "budget-max-wall-time",
