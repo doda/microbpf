@@ -60,3 +60,4 @@ exception-handling: reviewed exception defaults and tests
 - Completed map-hash-basic review: added hash map lookup/update/delete and tests.
 - Completed map-hash-collision review: collision/tombstone/high-load hash map tests added.
 - Completed map-max-entries review: added capacity enforcement tests.
+- Completed map-type-validation review: added map type/size validation tests.

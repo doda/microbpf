@@ -442,7 +442,7 @@
       "Attempt update with value of wrong size - verify TypeError",
       "Attempt array lookup with non-number key - verify TypeError"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-lru-hash",
