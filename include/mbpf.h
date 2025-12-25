@@ -295,6 +295,34 @@ uint32_t mbpf_hook_abi_version(mbpf_hook_type_t hook_type);
 /* Hook exception default query - returns the default return code on exception */
 int32_t mbpf_hook_exception_default(mbpf_hook_type_t hook_type);
 
+/* Ring buffer map access (host-side API) */
+
+/* Find a ring buffer map by name in a program.
+ * Returns the map index (0-based) or -1 if not found.
+ * The map must be of type MBPF_MAP_TYPE_RING. */
+int mbpf_program_find_ring_map(mbpf_program_t *prog, const char *name);
+
+/* Read the next event from a ring buffer map.
+ * Returns the event length on success, 0 if buffer is empty, or -1 on error.
+ * Event data is copied to out_data (up to max_len bytes).
+ * If the event is larger than max_len, it is truncated but still consumed. */
+int mbpf_ring_read(mbpf_program_t *prog, int map_idx,
+                   void *out_data, size_t max_len);
+
+/* Peek at the next event without consuming it.
+ * Returns the event length on success, 0 if buffer is empty, or -1 on error.
+ * Event data is copied to out_data (up to max_len bytes). */
+int mbpf_ring_peek(mbpf_program_t *prog, int map_idx,
+                   void *out_data, size_t max_len);
+
+/* Get the number of events currently in the ring buffer.
+ * Returns -1 on error. */
+int mbpf_ring_count(mbpf_program_t *prog, int map_idx);
+
+/* Get the number of events that have been dropped due to overflow.
+ * Returns -1 on error. */
+int mbpf_ring_dropped(mbpf_program_t *prog, int map_idx);
+
 #ifdef __cplusplus
 }
 #endif

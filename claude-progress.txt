@@ -63,3 +63,4 @@ exception-handling: reviewed exception defaults and tests
 - Completed map-type-validation review: added map type/size validation tests.
 - 2025-12-24: Completed map-lru-hash review with LRU hash map updates and tests.
 - 2025-12-24: Completed map-per-cpu review with per-CPU map support and tests.
+- 2025-12-24: Completed map-ring-buffer review and fixes with ring buffer host APIs, JS sync, and tests.

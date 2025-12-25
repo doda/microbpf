@@ -479,7 +479,7 @@
       "Read events from ring buffer (host side)",
       "Verify overflow behavior (oldest events dropped)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-counter",

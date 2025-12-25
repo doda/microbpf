@@ -92,6 +92,22 @@ typedef struct mbpf_percpu_hash_map {
 } mbpf_percpu_hash_map_t;
 
 /*
+ * Ring buffer map storage for event output.
+ * Uses a circular buffer with head/tail pointers.
+ * Each event is stored as: [length:4][data:length] (variable length records).
+ * When buffer is full, oldest events are dropped to make room for new ones.
+ */
+typedef struct mbpf_ring_buffer_map {
+    uint32_t buffer_size;       /* Total buffer size in bytes */
+    uint32_t max_event_size;    /* Maximum event size (from manifest value_size) */
+    uint32_t head;              /* Write position (next write offset) */
+    uint32_t tail;              /* Read position (next read offset) */
+    uint32_t dropped;           /* Count of dropped events due to overflow */
+    uint32_t event_count;       /* Number of events currently in buffer */
+    uint8_t *buffer;            /* Circular buffer storage */
+} mbpf_ring_buffer_map_t;
+
+/*
  * Generic map storage container.
  */
 typedef struct mbpf_map_storage {
@@ -103,6 +119,7 @@ typedef struct mbpf_map_storage {
         mbpf_lru_hash_map_t lru_hash;
         mbpf_percpu_array_map_t percpu_array;
         mbpf_percpu_hash_map_t percpu_hash;
+        mbpf_ring_buffer_map_t ring;
     } u;
 } mbpf_map_storage_t;
 
@@ -324,6 +341,25 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
                 }
                 pch->counts[cpu] = 0;
             }
+        } else if (effective_type == MBPF_MAP_TYPE_RING) {
+            /* Ring buffer: allocate circular buffer storage.
+             * For ring buffers, max_entries * value_size gives total buffer size.
+             * value_size represents the maximum event size. */
+            mbpf_ring_buffer_map_t *ring = &storage->u.ring;
+            ring->buffer_size = def->max_entries * def->value_size;
+            if (ring->buffer_size < 64) {
+                ring->buffer_size = 64;  /* Minimum 64 bytes */
+            }
+            ring->max_event_size = def->value_size;
+            ring->head = 0;
+            ring->tail = 0;
+            ring->dropped = 0;
+            ring->event_count = 0;
+
+            ring->buffer = calloc(ring->buffer_size, 1);
+            if (!ring->buffer) {
+                goto cleanup;
+            }
         }
     }
 
@@ -359,6 +395,8 @@ cleanup:
             }
             free(pch->buckets);
             free(pch->counts);
+        } else if (storage->type == MBPF_MAP_TYPE_RING) {
+            free(storage->u.ring.buffer);
         }
     }
     free(prog->maps);
@@ -401,6 +439,8 @@ static void free_maps(mbpf_program_t *prog) {
             }
             free(pch->buckets);
             free(pch->counts);
+        } else if (storage->type == MBPF_MAP_TYPE_RING) {
+            free(storage->u.ring.buffer);
         }
     }
     free(prog->maps);
@@ -428,6 +468,8 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
         mbpf_map_storage_t *storage = &prog->maps[i];
         if (storage->type == MBPF_MAP_TYPE_LRU) {
             code_size += 8192;  /* LRU hash maps need ~8KB for LRU list methods */
+        } else if (storage->type == MBPF_MAP_TYPE_RING) {
+            code_size += 4096;  /* Ring buffer maps need ~4KB for circular buffer methods */
         } else {
             code_size += 4096;  /* ~4KB per map for methods (hash maps need more) */
         }
@@ -984,12 +1026,126 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 instance_idx);
             p += written;
             remaining -= written;
+        } else if (storage->type == MBPF_MAP_TYPE_RING) {
+            /* Ring buffer map for event output.
+             * Provides submit() method to write events.
+             * Events are stored as [length:4][data:length] records.
+             * When buffer is full, oldest events are dropped. */
+            mbpf_ring_buffer_map_t *ring = &storage->u.ring;
+
+            /* Create ring buffer storage as a Uint8Array and metadata object */
+            written = snprintf(p, remaining,
+                "_mapData[%u]=new Uint8Array(%u);"
+                "_mapValid[%u]={head:0,tail:0,dropped:0,eventCount:0,bufSize:%u};",
+                i, ring->buffer_size, i, ring->buffer_size);
+            p += written;
+            remaining -= written;
+
+            /* Create ring buffer object with submit method.
+             * submit(eventData) writes an event to the ring buffer.
+             * Returns true on success, false if event is too large.
+             * On overflow, oldest events are dropped to make room. */
+            written = snprintf(p, remaining,
+                "maps['%s']=(function(){"
+                "var d=_mapData[%u];"
+                "var m=_mapValid[%u];"
+                "var bufSize=%u;"
+                "var maxEventSize=%u;"
+                /* Calculate bytes used in ring buffer */
+                "function bytesUsed(){"
+                    "if(m.head>=m.tail)return m.head-m.tail;"
+                    "return bufSize-m.tail+m.head;"
+                "}"
+                /* Read 4-byte little-endian uint32 at offset with wrap-around */
+                "function r32(off){"
+                    "return (d[off%%bufSize]|(d[(off+1)%%bufSize]<<8)|(d[(off+2)%%bufSize]<<16)|(d[(off+3)%%bufSize]<<24))>>>0;"
+                "}"
+                /* Write 4-byte little-endian uint32 at offset with wrap-around */
+                "function w32(off,v){"
+                    "d[off%%bufSize]=v&0xFF;"
+                    "d[(off+1)%%bufSize]=(v>>8)&0xFF;"
+                    "d[(off+2)%%bufSize]=(v>>16)&0xFF;"
+                    "d[(off+3)%%bufSize]=(v>>24)&0xFF;"
+                "}"
+                /* Drop oldest event from buffer */
+                "function dropOldest(){"
+                    "if(m.eventCount===0)return false;"
+                    "var len=r32(m.tail);"
+                    "var recordSize=4+len;"
+                    "m.tail=(m.tail+recordSize)%%bufSize;"
+                    "m.eventCount--;"
+                    "m.dropped++;"
+                    "return true;"
+                "}"
+                "return{"
+                /* submit(eventData) - write event to ring buffer */
+                "submit:function(eventData){"
+                    "if(!(eventData instanceof Uint8Array))throw new TypeError('eventData must be Uint8Array');"
+                    "var len=eventData.length;"
+                    /* Check if event exceeds max event size (manifest value_size) */
+                    "if(len>maxEventSize)return false;"
+                    "var recordSize=4+len;"  /* 4 bytes for length + data */
+                    /* Check if record is too large for buffer (need recordSize+1 to fit) */
+                    "if(recordSize+1>bufSize)return false;"
+                    /* Drop oldest events until there's enough room */
+                    "while(bufSize-bytesUsed()<recordSize+1){"
+                        "if(!dropOldest())break;"
+                    "}"
+                    /* Write length header (4 bytes, little-endian) */
+                    "w32(m.head,len);"
+                    /* Write event data byte by byte with wrap-around */
+                    "var dataStart=(m.head+4)%%bufSize;"
+                    "for(var i=0;i<len;i++){"
+                        "d[(dataStart+i)%%bufSize]=eventData[i];"
+                    "}"
+                    /* Update head pointer */
+                    "m.head=(m.head+recordSize)%%bufSize;"
+                    "m.eventCount++;"
+                    "return true;"
+                "},"
+                /* count() - return number of events in buffer */
+                "count:function(){return m.eventCount;},"
+                /* dropped() - return number of dropped events */
+                "dropped:function(){return m.dropped;},"
+                /* peek(outBuffer) - read oldest event without removing */
+                "peek:function(outBuf){"
+                    "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
+                    "if(m.eventCount===0)return 0;"
+                    "var len=r32(m.tail);"
+                    "var copyLen=len<outBuf.length?len:outBuf.length;"
+                    "var dataStart=(m.tail+4)%%bufSize;"
+                    "for(var i=0;i<copyLen;i++){"
+                        "outBuf[i]=d[(dataStart+i)%%bufSize];"
+                    "}"
+                    "return len;"  /* Return actual event length */
+                "},"
+                /* consume() - remove oldest event */
+                "consume:function(){"
+                    "if(m.eventCount===0)return false;"
+                    "var len=r32(m.tail);"
+                    "var recordSize=4+len;"
+                    "m.tail=(m.tail+recordSize)%%bufSize;"
+                    "m.eventCount--;"
+                    "return true;"
+                "}"
+                "};"
+                "})();",
+                storage->name,
+                i, i,
+                ring->buffer_size,
+                ring->max_event_size);
+            p += written;
+            remaining -= written;
         }
     }
 
-    /* Set global maps object and close IIFE */
+    /* Set global maps object, map data and close IIFE.
+     * Note: _mapData and _mapValid are exposed globally to allow host-side
+     * access for ring buffer sync. */
     written = snprintf(p, remaining,
         "globalThis.maps=maps;"
+        "globalThis._mapData=_mapData;"
+        "globalThis._mapValid=_mapValid;"
         "})()");
     p += written;
 
@@ -2534,6 +2690,57 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_OK;
     }
 
+    /* Sync ring buffer state from C to JS before running.
+     * This ensures host-side reads (which modify C state) are reflected in JS. */
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+        if (storage->type == MBPF_MAP_TYPE_RING) {
+            mbpf_ring_buffer_map_t *ring = &storage->u.ring;
+
+            /* Update JS metadata from C state */
+            char sync_code[256];
+            snprintf(sync_code, sizeof(sync_code),
+                "(function(){"
+                    "var m=_mapValid[%u];"
+                    "m.head=%u;"
+                    "m.tail=%u;"
+                    "m.dropped=%u;"
+                    "m.eventCount=%u;"
+                "})()",
+                i, ring->head, ring->tail, ring->dropped, ring->event_count);
+
+            JSValue sync_result = JS_Eval(ctx, sync_code, strlen(sync_code),
+                                          "<ring_sync_in>", JS_EVAL_RETVAL);
+            if (JS_IsException(sync_result)) {
+                JS_GetException(ctx);  /* Clear exception state */
+            }
+            /* JSValue managed by GC, no manual free needed */
+
+            /* Copy data buffer from C to JS.
+             * Each "d[N]=V;" is up to 15 chars, plus 256 for overhead. */
+            if (ring->buffer_size > 0) {
+                size_t code_size = (size_t)ring->buffer_size * 16 + 256;
+                char *data_code = malloc(code_size);
+                if (data_code) {
+                    char *p = data_code;
+                    char *end = data_code + code_size - 32;  /* Leave room */
+                    p += sprintf(p, "(function(){var d=_mapData[%u];", i);
+                    for (uint32_t j = 0; j < ring->buffer_size && p < end; j++) {
+                        p += sprintf(p, "d[%u]=%u;", j, ring->buffer[j]);
+                    }
+                    p += sprintf(p, "})()");
+                    JSValue data_result = JS_Eval(ctx, data_code, strlen(data_code),
+                                                   "<ring_data_in>", JS_EVAL_RETVAL);
+                    if (JS_IsException(data_result)) {
+                        JS_GetException(ctx);  /* Clear exception state */
+                    }
+                    /* JSValue managed by GC, no manual free needed */
+                    free(data_code);
+                }
+            }
+        }
+    }
+
     /* Check stack space: we need 3 slots (arg + function + this) */
     if (JS_StackCheck(ctx, 3)) {
         prog->stats.exceptions++;
@@ -2589,6 +2796,67 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     }
 
     prog->stats.successes++;
+
+    /* Sync ring buffer state from JS to C storage.
+     * This allows host-side APIs to read events written by the program. */
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+        if (storage->type == MBPF_MAP_TYPE_RING) {
+            mbpf_ring_buffer_map_t *ring = &storage->u.ring;
+
+            /* Get the ring buffer metadata and data from JS.
+             * Returns a flat array: [head, tail, dropped, eventCount, data...] */
+            char sync_code[512];
+            snprintf(sync_code, sizeof(sync_code),
+                "(function(){"
+                    "var m=_mapValid[%u];"
+                    "var d=_mapData[%u];"
+                    "var r=[m.head,m.tail,m.dropped,m.eventCount];"
+                    "for(var i=0;i<d.length;i++)r.push(d[i]);"
+                    "return r;"
+                "})()", i, i);
+
+            JSValue sync_result = JS_Eval(ctx, sync_code, strlen(sync_code),
+                                          "<ring_sync>", JS_EVAL_RETVAL);
+            if (JS_IsException(sync_result)) {
+                JS_GetException(ctx);  /* Clear exception state */
+            } else {
+                JSValue v_len = JS_GetPropertyStr(ctx, sync_result, "length");
+                int32_t len = 0;
+                if (JS_ToInt32(ctx, &len, v_len) == 0 && len >= 4) {
+                    int32_t head = 0, tail = 0, dropped = 0, event_count = 0;
+
+                    JSValue v0 = JS_GetPropertyUint32(ctx, sync_result, 0);
+                    JSValue v1 = JS_GetPropertyUint32(ctx, sync_result, 1);
+                    JSValue v2 = JS_GetPropertyUint32(ctx, sync_result, 2);
+                    JSValue v3 = JS_GetPropertyUint32(ctx, sync_result, 3);
+
+                    JS_ToInt32(ctx, &head, v0);
+                    JS_ToInt32(ctx, &tail, v1);
+                    JS_ToInt32(ctx, &dropped, v2);
+                    JS_ToInt32(ctx, &event_count, v3);
+
+                    /* JSValues managed by GC, no manual free needed */
+
+                    ring->head = (uint32_t)head;
+                    ring->tail = (uint32_t)tail;
+                    ring->dropped = (uint32_t)dropped;
+                    ring->event_count = (uint32_t)event_count;
+
+                    /* Copy data bytes (starting at index 4) */
+                    for (int32_t j = 4; j < len && (uint32_t)(j - 4) < ring->buffer_size; j++) {
+                        JSValue elem = JS_GetPropertyUint32(ctx, sync_result, (uint32_t)j);
+                        int32_t byte_val = 0;
+                        JS_ToInt32(ctx, &byte_val, elem);
+                        ring->buffer[j - 4] = (uint8_t)byte_val;
+                        /* JSValue managed by GC */
+                    }
+                }
+                /* JSValues managed by GC, no manual free needed */
+            }
+        }
+    }
+
     __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
     return MBPF_OK;
 }
@@ -2715,4 +2983,128 @@ mbpf_instance_t *mbpf_program_get_instance(mbpf_program_t *prog, uint32_t idx) {
         return NULL;
     }
     return &prog->instances[idx];
+}
+
+/* Ring buffer map access (host-side API) */
+
+int mbpf_program_find_ring_map(mbpf_program_t *prog, const char *name) {
+    if (!prog || !name || !prog->maps) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+        if (storage->type == MBPF_MAP_TYPE_RING &&
+            strncmp(storage->name, name, sizeof(storage->name)) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+int mbpf_ring_read(mbpf_program_t *prog, int map_idx,
+                   void *out_data, size_t max_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_RING) {
+        return -1;
+    }
+
+    mbpf_ring_buffer_map_t *ring = &storage->u.ring;
+
+    /* Check if buffer is empty */
+    if (ring->event_count == 0) {
+        return 0;
+    }
+
+    /* Read length header (4 bytes, little-endian) with wrap-around */
+    uint32_t tail = ring->tail;
+    uint32_t buf_size = ring->buffer_size;
+    uint32_t len = ring->buffer[tail % buf_size] |
+                   ((uint32_t)ring->buffer[(tail + 1) % buf_size] << 8) |
+                   ((uint32_t)ring->buffer[(tail + 2) % buf_size] << 16) |
+                   ((uint32_t)ring->buffer[(tail + 3) % buf_size] << 24);
+
+    /* Copy event data */
+    if (out_data && max_len > 0) {
+        size_t copy_len = len < max_len ? len : max_len;
+        uint32_t data_start = (tail + 4) % buf_size;
+        for (size_t i = 0; i < copy_len; i++) {
+            ((uint8_t *)out_data)[i] = ring->buffer[(data_start + i) % buf_size];
+        }
+    }
+
+    /* Consume the event */
+    uint32_t record_size = 4 + len;
+    ring->tail = (tail + record_size) % buf_size;
+    ring->event_count--;
+
+    return (int)len;
+}
+
+int mbpf_ring_peek(mbpf_program_t *prog, int map_idx,
+                   void *out_data, size_t max_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_RING) {
+        return -1;
+    }
+
+    mbpf_ring_buffer_map_t *ring = &storage->u.ring;
+
+    /* Check if buffer is empty */
+    if (ring->event_count == 0) {
+        return 0;
+    }
+
+    /* Read length header (4 bytes, little-endian) with wrap-around */
+    uint32_t tail = ring->tail;
+    uint32_t buf_size = ring->buffer_size;
+    uint32_t len = ring->buffer[tail % buf_size] |
+                   ((uint32_t)ring->buffer[(tail + 1) % buf_size] << 8) |
+                   ((uint32_t)ring->buffer[(tail + 2) % buf_size] << 16) |
+                   ((uint32_t)ring->buffer[(tail + 3) % buf_size] << 24);
+
+    /* Copy event data (without consuming) */
+    if (out_data && max_len > 0) {
+        size_t copy_len = len < max_len ? len : max_len;
+        uint32_t data_start = (tail + 4) % buf_size;
+        for (size_t i = 0; i < copy_len; i++) {
+            ((uint8_t *)out_data)[i] = ring->buffer[(data_start + i) % buf_size];
+        }
+    }
+
+    return (int)len;
+}
+
+int mbpf_ring_count(mbpf_program_t *prog, int map_idx) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_RING) {
+        return -1;
+    }
+
+    return (int)storage->u.ring.event_count;
+}
+
+int mbpf_ring_dropped(mbpf_program_t *prog, int map_idx) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_RING) {
+        return -1;
+    }
+
+    return (int)storage->u.ring.dropped;
 }
