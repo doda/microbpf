@@ -809,7 +809,7 @@
       "Verify references are released on cleanup",
       "Stress test with allocations to trigger GC"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "deferred-execution-queue",

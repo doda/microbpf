@@ -257,6 +257,15 @@ struct mbpf_instance {
     /* Wall time budget tracking for max_wall_time_us enforcement */
     uint32_t max_wall_time_us;  /* Maximum wall time allowed per invocation in microseconds */
     struct timespec start_time; /* Start time of current invocation */
+    /*
+     * GC-protected references for persistent values that must survive
+     * compacting GC. MQuickJS uses a compacting GC that can relocate objects,
+     * so any values held across potential GC points must use JSGCRef.
+     */
+    JSGCRef entry_func_ref;     /* GC-protected reference to entry function (e.g., mbpf_prog) */
+    JSGCRef maps_obj_ref;       /* GC-protected reference to maps global object */
+    bool has_entry_func_ref;    /* Whether entry_func_ref is valid (was registered) */
+    bool has_maps_obj_ref;      /* Whether maps_obj_ref is valid (was registered) */
 };
 
 /* Internal structures */
@@ -2959,6 +2968,20 @@ static int create_instance(mbpf_program_t *prog, uint32_t idx, size_t heap_size,
  */
 static void free_instance(mbpf_instance_t *inst) {
     if (inst->js_initialized && inst->js_ctx) {
+        /*
+         * Release GC-protected references BEFORE freeing the context.
+         * This is critical for proper cleanup - the GC reference list
+         * must be cleaned up while the context is still valid.
+         */
+        if (inst->has_entry_func_ref) {
+            JS_DeleteGCRef(inst->js_ctx, &inst->entry_func_ref);
+            inst->has_entry_func_ref = false;
+        }
+        if (inst->has_maps_obj_ref) {
+            JS_DeleteGCRef(inst->js_ctx, &inst->maps_obj_ref);
+            inst->has_maps_obj_ref = false;
+        }
+
         JS_FreeContext(inst->js_ctx);
         inst->js_ctx = NULL;
     }
@@ -2972,6 +2995,74 @@ static void free_instance(mbpf_instance_t *inst) {
         inst->js_heap = NULL;
     }
     inst->js_initialized = false;
+}
+
+/*
+ * Register GC-protected references for persistent values that must survive
+ * compacting GC. This should be called after setup_maps_object completes
+ * so that both the entry function and maps object are available.
+ *
+ * MQuickJS uses a compacting GC, which means object addresses can change
+ * during garbage collection. Any JSValue that is held across potential
+ * GC points (like helper calls that may allocate) must be protected with
+ * a GC reference.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+static int register_gc_refs(mbpf_instance_t *inst, const char *entry_symbol) {
+    if (!inst->js_initialized || !inst->js_ctx) {
+        return -1;
+    }
+
+    JSContext *ctx = inst->js_ctx;
+    JSValue *ref_val;
+
+    /* Initialize the flags to false in case we fail partway */
+    inst->has_entry_func_ref = false;
+    inst->has_maps_obj_ref = false;
+
+    /* Get global object to look up entry function and maps */
+    JSValue global = JS_GetGlobalObject(ctx);
+    if (JS_IsUndefined(global) || JS_IsException(global)) {
+        return -1;
+    }
+
+    /* Cache entry function (e.g., mbpf_prog) with GC protection.
+     * This function is called repeatedly during program execution,
+     * so caching it with GC protection avoids repeated lookups and
+     * ensures it remains valid after any GC that may occur during
+     * helper calls or other allocations. */
+    JSValue entry_func = JS_GetPropertyStr(ctx, global, entry_symbol);
+    if (JS_IsUndefined(entry_func) || !JS_IsFunction(ctx, entry_func)) {
+        /* Entry function must exist - validation should have caught this */
+        return -1;
+    }
+
+    /* Register the entry function as a GC root */
+    ref_val = JS_AddGCRef(ctx, &inst->entry_func_ref);
+    if (!ref_val) {
+        return -1;  /* Should not happen, but be safe */
+    }
+    *ref_val = entry_func;
+    inst->has_entry_func_ref = true;
+
+    /* Cache maps object with GC protection if it exists.
+     * The maps object is accessed during every program run to sync
+     * map state. Caching it avoids repeated global lookups. */
+    JSValue maps_obj = JS_GetPropertyStr(ctx, global, "maps");
+    if (!JS_IsUndefined(maps_obj) && !JS_IsException(maps_obj)) {
+        ref_val = JS_AddGCRef(ctx, &inst->maps_obj_ref);
+        if (!ref_val) {
+            /* Clean up the entry function ref we just added */
+            JS_DeleteGCRef(ctx, &inst->entry_func_ref);
+            inst->has_entry_func_ref = false;
+            return -1;
+        }
+        *ref_val = maps_obj;
+        inst->has_maps_obj_ref = true;
+    }
+
+    return 0;
 }
 
 /*
@@ -3202,6 +3293,24 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
             setup_helper_tracking(prog->instances[i].js_ctx, prog->instances[i].max_helpers) != 0 ||
             setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0 ||
             setup_lowlevel_map_helpers(prog->instances[i].js_ctx, prog) != 0) {
+            for (uint32_t j = 0; j < prog->instance_count; j++) {
+                free_instance(&prog->instances[j]);
+            }
+            free(prog->instances);
+            free(prog->bytecode);
+            free_emit_buffer(prog);
+            free_maps(prog);
+            mbpf_manifest_free(&prog->manifest);
+            free(prog);
+            return MBPF_ERR_NO_MEM;
+        }
+    }
+
+    /* Register GC-protected references for persistent values.
+     * This must be done after setup_maps_object so that both the entry
+     * function and maps object are available for caching. */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        if (register_gc_refs(&prog->instances[i], prog->manifest.entry_symbol) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
             }
@@ -4139,6 +4248,23 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
     if (can_preserve_maps) {
         for (uint32_t i = 0; i < prog->instance_count; i++) {
             sync_maps_from_c_to_js(&prog->instances[i], prog, i);
+        }
+    }
+
+    /* Register GC-protected references for persistent values.
+     * This must be done after setup_maps_object so that both the entry
+     * function and maps object are available for caching. */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        if (register_gc_refs(&prog->instances[i], prog->manifest.entry_symbol) != 0) {
+            for (uint32_t j = 0; j < prog->instance_count; j++) {
+                free_instance(&prog->instances[j]);
+            }
+            free(prog->instances);
+            prog->instances = NULL;
+            free(prog->bytecode);
+            prog->bytecode = NULL;
+            free_maps(prog);
+            return MBPF_ERR_NO_MEM;
         }
     }
 
@@ -5350,15 +5476,24 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     }
 
     /* Create context object from ctx_blob based on hook type.
-     * This must be done BEFORE looking up the entry function because
-     * create_hook_ctx may allocate objects and trigger GC, which could
-     * relocate the function. */
+     * With GC-protected references, this can be done at any time since
+     * the entry function is held in a JSGCRef that survives compaction. */
     JSValue ctx_arg = create_hook_ctx(ctx, hook, ctx_blob, ctx_len);
 
-    /* Look up entry function AFTER create_hook_ctx to avoid GC invalidation.
-     * MQuickJS has a compacting GC, so any allocations between lookup and
-     * use could move the function object. */
-    JSValue prog_func = JS_GetPropertyStr(ctx, global, prog->manifest.entry_symbol);
+    /* Use the GC-protected entry function reference.
+     * The entry function is registered with JS_AddGCRef at load time,
+     * which ensures it remains valid even after GC/compaction cycles.
+     * This is more efficient than looking it up on every invocation and
+     * is safe because the JSGCRef.val is updated by the GC when objects move. */
+    JSValue prog_func;
+    if (inst->has_entry_func_ref) {
+        prog_func = inst->entry_func_ref.val;
+    } else {
+        /* Fallback: look up entry function if GC ref wasn't registered.
+         * This should only happen if register_gc_refs failed silently. */
+        prog_func = JS_GetPropertyStr(ctx, global, prog->manifest.entry_symbol);
+    }
+
     if (JS_IsUndefined(prog_func) || !JS_IsFunction(ctx, prog_func)) {
         prog->stats.exceptions++;
         *out_rc = exception_default;

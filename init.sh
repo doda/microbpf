@@ -470,6 +470,16 @@ if [ -f build/test_allocation_free_helpers ]; then
     fi
 fi
 
+# Run GC reference handling tests
+if [ -f build/test_gc_reference ]; then
+    ./build/test_gc_reference
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: GC reference handling tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
