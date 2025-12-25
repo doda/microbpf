@@ -566,22 +566,26 @@ static void free_emit_buffer(mbpf_program_t *prog) {
  */
 static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
     /* Build JS code to create mbpf object with apiVersion, log, u64 helpers,
-     * and optionally nowNs if CAP_TIME is granted, emit if CAP_EMIT is granted.
+     * and optionally nowNs if CAP_TIME is granted, emit if CAP_EMIT is granted,
+     * stats if CAP_STATS is granted.
      * The log function prepends the level prefix and calls console.log,
      * which maps to js_print in mbpf_stdlib.c where the actual logging happens.
      * u64LoadLE/u64StoreLE handle 64-bit values as [lo, hi] pairs in LE format.
      * nowNs reads from _mbpf_time_ns which is updated by the runtime before each run.
-     * emit writes events to _mbpf_emit_buf which is synced to C after each run. */
-    char code[4096];
+     * emit writes events to _mbpf_emit_buf which is synced to C after each run.
+     * stats reads from _mbpf_stats which is updated by the runtime before each run. */
+    char code[6144];
     uint32_t api_version = MBPF_API_VERSION;
     int has_cap_time = (capabilities & MBPF_CAP_TIME) != 0;
     int has_cap_emit = (capabilities & MBPF_CAP_EMIT) != 0;
+    int has_cap_stats = (capabilities & MBPF_CAP_STATS) != 0;
 
     snprintf(code, sizeof(code),
         "(function(){"
         "var levelNames=['DEBUG','INFO','WARN','ERROR'];"
         "%s"  /* CAP_TIME: create _mbpf_time_ns array */
         "%s"  /* CAP_EMIT: create _mbpf_emit_* state */
+        "%s"  /* CAP_STATS: create _mbpf_stats object */
         "globalThis.mbpf={"
         "apiVersion:%u,"
         "log:function(level,msg){"
@@ -610,7 +614,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
             "bytes[offset+2]=(lo>>16)&0xFF;bytes[offset+3]=(lo>>24)&0xFF;"
             "bytes[offset+4]=hi&0xFF;bytes[offset+5]=(hi>>8)&0xFF;"
             "bytes[offset+6]=(hi>>16)&0xFF;bytes[offset+7]=(hi>>24)&0xFF;"
-        "}%s%s"
+        "}%s%s%s"
         "};"
         "})()",
         has_cap_time ? "globalThis._mbpf_time_ns=[0,0];" : "",
@@ -621,6 +625,19 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
              * Format in buffer: [eventId:4][dataLen:4][data:dataLen] per event */
             "globalThis._mbpf_emit_buf=new Uint8Array(4096);"
             "globalThis._mbpf_emit_meta={head:0,tail:0,dropped:0,eventCount:0,bufSize:4096,maxEventSize:256};"
+            : "",
+        has_cap_stats ?
+            /* Create stats object:
+             * Each stat value is stored as a [lo, hi] pair for 64-bit representation.
+             * The runtime updates this object before each program invocation. */
+            "globalThis._mbpf_stats={"
+                "invocations:[0,0],"
+                "successes:[0,0],"
+                "exceptions:[0,0],"
+                "oom_errors:[0,0],"
+                "budget_exceeded:[0,0],"
+                "nested_dropped:[0,0]"
+            "};"
             : "",
         api_version,
         has_cap_time ?
@@ -665,6 +682,22 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
                 "m.head=(m.head+recordLen)%bs;"
                 "m.eventCount++;"
                 "return true;"
+            "}"
+            : "",
+        has_cap_stats ?
+            ","
+            "stats:function(){"
+                /* Returns a new object with the current stats values.
+                 * Each value is a fresh [lo, hi] array (copy, not reference). */
+                "var s=_mbpf_stats;"
+                "return{"
+                    "invocations:[s.invocations[0],s.invocations[1]],"
+                    "successes:[s.successes[0],s.successes[1]],"
+                    "exceptions:[s.exceptions[0],s.exceptions[1]],"
+                    "oom_errors:[s.oom_errors[0],s.oom_errors[1]],"
+                    "budget_exceeded:[s.budget_exceeded[0],s.budget_exceeded[1]],"
+                    "nested_dropped:[s.nested_dropped[0],s.nested_dropped[1]]"
+                "};"
             "}"
             : "");
 
@@ -4540,6 +4573,36 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         JSValue time_result = JS_Eval(ctx, time_code, strlen(time_code),
                                        "<time>", 0);
         if (JS_IsException(time_result)) {
+            JS_GetException(ctx);  /* Clear exception, non-fatal */
+        }
+    }
+
+    /* Update _mbpf_stats if CAP_STATS is granted.
+     * This provides the current program stats to mbpf.stats(). */
+    if (prog->manifest.capabilities & MBPF_CAP_STATS) {
+        char stats_code[512];
+        snprintf(stats_code, sizeof(stats_code),
+            "_mbpf_stats.invocations=[%u,%u];"
+            "_mbpf_stats.successes=[%u,%u];"
+            "_mbpf_stats.exceptions=[%u,%u];"
+            "_mbpf_stats.oom_errors=[%u,%u];"
+            "_mbpf_stats.budget_exceeded=[%u,%u];"
+            "_mbpf_stats.nested_dropped=[%u,%u];",
+            (uint32_t)(prog->stats.invocations & 0xFFFFFFFFULL),
+            (uint32_t)(prog->stats.invocations >> 32),
+            (uint32_t)(prog->stats.successes & 0xFFFFFFFFULL),
+            (uint32_t)(prog->stats.successes >> 32),
+            (uint32_t)(prog->stats.exceptions & 0xFFFFFFFFULL),
+            (uint32_t)(prog->stats.exceptions >> 32),
+            (uint32_t)(prog->stats.oom_errors & 0xFFFFFFFFULL),
+            (uint32_t)(prog->stats.oom_errors >> 32),
+            (uint32_t)(prog->stats.budget_exceeded & 0xFFFFFFFFULL),
+            (uint32_t)(prog->stats.budget_exceeded >> 32),
+            (uint32_t)(prog->stats.nested_dropped & 0xFFFFFFFFULL),
+            (uint32_t)(prog->stats.nested_dropped >> 32));
+        JSValue stats_result = JS_Eval(ctx, stats_code, strlen(stats_code),
+                                        "<stats>", 0);
+        if (JS_IsException(stats_result)) {
             JS_GetException(ctx);  /* Clear exception, non-fatal */
         }
     }
