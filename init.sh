@@ -370,6 +370,16 @@ if [ -f build/test_map_iteration ]; then
     fi
 fi
 
+# Run map concurrency tests
+if [ -f build/test_map_concurrency ]; then
+    ./build/test_map_concurrency
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Map concurrency tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

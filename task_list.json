@@ -529,7 +529,7 @@
       "Verify per-CPU maps avoid global contention",
       "Stress test with high concurrency"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "helper-api-version",
