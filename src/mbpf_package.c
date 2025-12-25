@@ -1662,3 +1662,144 @@ int mbpf_package_verify_signature(const void *data, size_t len,
 
     return MBPF_OK;
 }
+
+/* ============================================================================
+ * Package Assembly API
+ * ============================================================================ */
+
+/*
+ * Write a 16-bit little-endian value to a buffer.
+ */
+static void write_le16(uint8_t *buf, uint16_t val) {
+    buf[0] = val & 0xFF;
+    buf[1] = (val >> 8) & 0xFF;
+}
+
+/*
+ * Write a 32-bit little-endian value to a buffer.
+ */
+static void write_le32(uint8_t *buf, uint32_t val) {
+    buf[0] = val & 0xFF;
+    buf[1] = (val >> 8) & 0xFF;
+    buf[2] = (val >> 16) & 0xFF;
+    buf[3] = (val >> 24) & 0xFF;
+}
+
+/*
+ * Calculate the size of an assembled package.
+ */
+size_t mbpf_package_size(const mbpf_section_input_t *sections,
+                          uint32_t section_count) {
+    if (!sections || section_count == 0 || section_count > MBPF_MAX_SECTIONS) {
+        return 0;
+    }
+
+    /* Header: 20 bytes */
+    size_t total = sizeof(mbpf_file_header_t);
+
+    /* Section table: 16 bytes per section */
+    total += section_count * sizeof(mbpf_section_desc_t);
+
+    /* Section data */
+    for (uint32_t i = 0; i < section_count; i++) {
+        if (sections[i].len > 0 && !sections[i].data) {
+            return 0;
+        }
+        total += sections[i].len;
+    }
+
+    return total;
+}
+
+/*
+ * Assemble a .mbpf package from sections.
+ */
+int mbpf_package_assemble(const mbpf_section_input_t *sections,
+                           uint32_t section_count,
+                           const mbpf_assemble_opts_t *opts,
+                           uint8_t *out_data, size_t *out_len) {
+    if (!sections || section_count == 0 || !out_len) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    if (section_count > MBPF_MAX_SECTIONS) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    for (uint32_t i = 0; i < section_count; i++) {
+        if (sections[i].len > 0 && !sections[i].data) {
+            return MBPF_ERR_INVALID_ARG;
+        }
+    }
+
+    /* Calculate required size */
+    size_t required = mbpf_package_size(sections, section_count);
+    if (required == 0) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Check buffer size */
+    if (!out_data || *out_len < required) {
+        *out_len = required;
+        return MBPF_ERR_NO_MEM;
+    }
+
+    /* Use default options if not provided */
+    mbpf_assemble_opts_t default_opts = {0};
+    if (!opts) {
+        opts = &default_opts;
+    }
+
+    /* Calculate header size (header + section table) */
+    uint16_t header_size = (uint16_t)(sizeof(mbpf_file_header_t) +
+                                       section_count * sizeof(mbpf_section_desc_t));
+
+    /* Calculate section offsets */
+    uint32_t offsets[MBPF_MAX_SECTIONS];
+    uint32_t current_offset = header_size;
+    for (uint32_t i = 0; i < section_count; i++) {
+        offsets[i] = current_offset;
+        current_offset += (uint32_t)sections[i].len;
+    }
+
+    /* Write file header */
+    uint8_t *ptr = out_data;
+    write_le32(ptr, MBPF_MAGIC);             ptr += 4;
+    write_le16(ptr, MBPF_FORMAT_VERSION);    ptr += 2;
+    write_le16(ptr, header_size);            ptr += 2;
+    write_le32(ptr, opts->flags);            ptr += 4;
+    write_le32(ptr, section_count);          ptr += 4;
+    write_le32(ptr, 0);  /* file_crc32 placeholder, filled later if needed */
+    ptr += 4;
+
+    /* Write section table */
+    for (uint32_t i = 0; i < section_count; i++) {
+        uint32_t section_crc = 0;
+        if (opts->compute_section_crcs && sections[i].len > 0) {
+            section_crc = mbpf_crc32(sections[i].data, sections[i].len);
+        }
+
+        write_le32(ptr, (uint32_t)sections[i].type);  ptr += 4;
+        write_le32(ptr, offsets[i]);                  ptr += 4;
+        write_le32(ptr, (uint32_t)sections[i].len);   ptr += 4;
+        write_le32(ptr, section_crc);                 ptr += 4;
+    }
+
+    /* Write section data */
+    for (uint32_t i = 0; i < section_count; i++) {
+        if (sections[i].len > 0 && sections[i].data) {
+            memcpy(ptr, sections[i].data, sections[i].len);
+            ptr += sections[i].len;
+        }
+    }
+
+    /* Compute file CRC if requested (using mbpf_file_crc32 which skips the CRC field) */
+    if (opts->compute_file_crc) {
+        uint32_t file_crc = mbpf_file_crc32(out_data, required);
+        /* file_crc32 is at offset 16 in header */
+        write_le32(out_data + 16, file_crc);
+    }
+
+    *out_len = required;
+    return MBPF_OK;
+}

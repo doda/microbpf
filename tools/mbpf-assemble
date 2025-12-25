@@ -1,0 +1,165 @@
+#!/bin/bash
+# mbpf-assemble - Assemble .mbpf package from manifest and bytecode
+#
+# Usage: mbpf-assemble [options] -o output.mbpf
+#
+# Required options:
+#   -m FILE      Manifest file (CBOR or JSON, or generate with mbpf-manifest)
+#   -b FILE      Bytecode file (.qjbc from mbpf-compile)
+#   -o FILE      Output .mbpf file
+#
+# Optional options:
+#   -d FILE      Debug info file
+#   --crc        Compute file and section CRCs
+#   --debug      Set DEBUG flag in header
+#   -h, --help   Show this help message
+#
+# Examples:
+#   mbpf-assemble -m manifest.cbor -b prog.qjbc -o prog.mbpf
+#   mbpf-assemble -m manifest.json -b prog.qjbc --crc -o prog.mbpf
+#   mbpf-assemble -m manifest.cbor -b prog.qjbc -d debug.txt --debug -o prog.mbpf
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+ASSEMBLER="$PROJECT_ROOT/build/mbpf_assemble"
+
+usage() {
+    echo "Usage: mbpf-assemble [options] -o output.mbpf"
+    echo ""
+    echo "Assemble a .mbpf package from manifest and bytecode files."
+    echo ""
+    echo "Required options:"
+    echo "  -m FILE      Manifest file (CBOR or JSON)"
+    echo "  -b FILE      Bytecode file (.qjbc from mbpf-compile)"
+    echo "  -o FILE      Output .mbpf file"
+    echo ""
+    echo "Optional options:"
+    echo "  -d FILE      Debug info file"
+    echo "  --crc        Compute file and section CRCs"
+    echo "  --debug      Set DEBUG flag in header"
+    echo "  -h, --help   Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  mbpf-assemble -m manifest.cbor -b prog.qjbc -o prog.mbpf"
+    echo "  mbpf-assemble -m manifest.json -b prog.qjbc --crc -o prog.mbpf"
+    exit "${1:-0}"
+}
+
+# Check if assembler exists
+if [ ! -x "$ASSEMBLER" ]; then
+    echo "Error: assembler not found at $ASSEMBLER" >&2
+    echo "Run 'make' to build the microBPF tools first." >&2
+    exit 1
+fi
+
+# Default values
+MANIFEST_FILE=""
+BYTECODE_FILE=""
+DEBUG_FILE=""
+OUTPUT_FILE=""
+EXTRA_ARGS=""
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage 0
+            ;;
+        -m)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -m requires a manifest file" >&2
+                exit 1
+            fi
+            MANIFEST_FILE="$1"
+            shift
+            ;;
+        -b)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -b requires a bytecode file" >&2
+                exit 1
+            fi
+            BYTECODE_FILE="$1"
+            shift
+            ;;
+        -d)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -d requires a debug file" >&2
+                exit 1
+            fi
+            DEBUG_FILE="$1"
+            shift
+            ;;
+        -o)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -o requires an output file" >&2
+                exit 1
+            fi
+            OUTPUT_FILE="$1"
+            shift
+            ;;
+        --crc)
+            EXTRA_ARGS="$EXTRA_ARGS --crc"
+            shift
+            ;;
+        --debug)
+            EXTRA_ARGS="$EXTRA_ARGS --debug"
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            usage 1
+            ;;
+        *)
+            echo "Error: Unexpected argument: $1" >&2
+            usage 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$MANIFEST_FILE" ]; then
+    echo "Error: Manifest file required (-m)" >&2
+    usage 1
+fi
+
+if [ -z "$BYTECODE_FILE" ]; then
+    echo "Error: Bytecode file required (-b)" >&2
+    usage 1
+fi
+
+if [ -z "$OUTPUT_FILE" ]; then
+    echo "Error: Output file required (-o)" >&2
+    usage 1
+fi
+
+# Check input files exist
+if [ ! -f "$MANIFEST_FILE" ]; then
+    echo "Error: Manifest file not found: $MANIFEST_FILE" >&2
+    exit 1
+fi
+
+if [ ! -f "$BYTECODE_FILE" ]; then
+    echo "Error: Bytecode file not found: $BYTECODE_FILE" >&2
+    exit 1
+fi
+
+if [ -n "$DEBUG_FILE" ] && [ ! -f "$DEBUG_FILE" ]; then
+    echo "Error: Debug file not found: $DEBUG_FILE" >&2
+    exit 1
+fi
+
+# Build the command
+CMD="$ASSEMBLER -m \"$MANIFEST_FILE\" -b \"$BYTECODE_FILE\""
+if [ -n "$DEBUG_FILE" ]; then
+    CMD="$CMD -d \"$DEBUG_FILE\""
+fi
+CMD="$CMD -o \"$OUTPUT_FILE\" $EXTRA_ARGS"
+
+# Run the assembler
+eval "$CMD"

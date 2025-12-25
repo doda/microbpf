@@ -232,6 +232,64 @@ int mbpf_bytecode_check(const uint8_t *bytecode, size_t bytecode_len,
 /* Get the expected bytecode version for this runtime */
 uint16_t mbpf_bytecode_version(void);
 
+/* ============================================================================
+ * Package Assembly API
+ * ============================================================================ */
+
+/* Maximum number of sections in a package */
+#define MBPF_MAX_SECTIONS 8
+
+/* Section data for assembly */
+typedef struct {
+    mbpf_section_type_t type;
+    const void *data;
+    size_t len;
+} mbpf_section_input_t;
+
+/* Assembly options */
+typedef struct {
+    int compute_file_crc;      /* Compute and store file-level CRC32 */
+    int compute_section_crcs;  /* Compute and store per-section CRC32s */
+    uint32_t flags;            /* Header flags (MBPF_FLAG_SIGNED, MBPF_FLAG_DEBUG) */
+} mbpf_assemble_opts_t;
+
+/*
+ * Calculate the size of an assembled package.
+ *
+ * Parameters:
+ *   sections       - Array of section inputs
+ *   section_count  - Number of sections
+ *
+ * Returns:
+ *   Total size in bytes, or 0 on error
+ */
+size_t mbpf_package_size(const mbpf_section_input_t *sections,
+                          uint32_t section_count);
+
+/*
+ * Assemble a .mbpf package from sections.
+ *
+ * Sections are written in the order provided. The MANIFEST section should
+ * typically be first, followed by BYTECODE. If a SIG section is included,
+ * it must be last.
+ *
+ * Parameters:
+ *   sections       - Array of section inputs
+ *   section_count  - Number of sections
+ *   opts           - Assembly options (may be NULL for defaults)
+ *   out_data       - Buffer to receive package data
+ *   out_len        - On input, buffer size; on output, bytes written
+ *
+ * Returns:
+ *   MBPF_OK on success
+ *   MBPF_ERR_INVALID_ARG if sections is NULL or section_count is 0
+ *   MBPF_ERR_NO_MEM if buffer is too small
+ */
+int mbpf_package_assemble(const mbpf_section_input_t *sections,
+                           uint32_t section_count,
+                           const mbpf_assemble_opts_t *opts,
+                           uint8_t *out_data, size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

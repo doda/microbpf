@@ -930,7 +930,7 @@
       "Calculate CRC32 values if requested",
       "Output valid .mbpf binary"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "toolchain-signing",
