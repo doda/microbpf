@@ -460,6 +460,16 @@ if [ -f build/test_typed_array_shim ]; then
     fi
 fi
 
+# Run allocation-free helper tests
+if [ -f build/test_allocation_free_helpers ]; then
+    ./build/test_allocation_free_helpers
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Allocation-free helper tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

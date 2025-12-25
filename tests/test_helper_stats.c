@@ -1,10 +1,13 @@
 /*
  * microBPF Helper Stats Tests
  *
- * Tests for mbpf.stats() helper:
+ * Tests for mbpf.stats(out) helper:
  * 1. Request CAP_STATS capability
- * 2. Call mbpf.stats() - verify returns platform-defined stats object
+ * 2. Call mbpf.stats(out) - verify writes to preallocated stats object
  * 3. Verify invocation counts, error counts, etc. are accessible
+ *
+ * Note: mbpf.stats(out) is allocation-free per §7.5.3.
+ * The caller must preallocate the output object with the expected structure.
  */
 
 #include "mbpf.h"
@@ -149,6 +152,17 @@ static uint8_t *compile_js_to_bytecode(const char *js_code, size_t *out_len) {
     return bytecode;
 }
 
+/* Preallocated stats object template for JS programs */
+#define STATS_PREALLOC \
+    "var _statsOut = {\n" \
+    "    invocations: [0, 0],\n" \
+    "    successes: [0, 0],\n" \
+    "    exceptions: [0, 0],\n" \
+    "    oom_errors: [0, 0],\n" \
+    "    budget_exceeded: [0, 0],\n" \
+    "    nested_dropped: [0, 0]\n" \
+    "};\n"
+
 /* ============================================================================
  * Test Cases - helper-stats
  * ============================================================================ */
@@ -243,19 +257,20 @@ TEST(function_not_exists_without_cap_stats) {
 }
 
 /*
- * Test 3: stats returns an object with expected properties
+ * Test 3: stats writes to preallocated object with expected properties
  */
-TEST(stats_returns_object_with_properties) {
+TEST(stats_writes_to_preallocated_object) {
     const char *js_code =
+        STATS_PREALLOC
         "function mbpf_prog(ctx) {\n"
-        "    var s = mbpf.stats();\n"
-        "    if (typeof s !== 'object') return -1;\n"
-        "    if (!Array.isArray(s.invocations)) return -2;\n"
-        "    if (!Array.isArray(s.successes)) return -3;\n"
-        "    if (!Array.isArray(s.exceptions)) return -4;\n"
-        "    if (!Array.isArray(s.oom_errors)) return -5;\n"
-        "    if (!Array.isArray(s.budget_exceeded)) return -6;\n"
-        "    if (!Array.isArray(s.nested_dropped)) return -7;\n"
+        "    mbpf.stats(_statsOut);\n"
+        "    if (typeof _statsOut !== 'object') return -1;\n"
+        "    if (!Array.isArray(_statsOut.invocations)) return -2;\n"
+        "    if (!Array.isArray(_statsOut.successes)) return -3;\n"
+        "    if (!Array.isArray(_statsOut.exceptions)) return -4;\n"
+        "    if (!Array.isArray(_statsOut.oom_errors)) return -5;\n"
+        "    if (!Array.isArray(_statsOut.budget_exceeded)) return -6;\n"
+        "    if (!Array.isArray(_statsOut.nested_dropped)) return -7;\n"
         "    return 0;\n"
         "}\n";
 
@@ -300,14 +315,15 @@ TEST(stats_returns_object_with_properties) {
  */
 TEST(stats_values_are_u64_pairs) {
     const char *js_code =
+        STATS_PREALLOC
         "function mbpf_prog(ctx) {\n"
-        "    var s = mbpf.stats();\n"
-        "    if (s.invocations.length !== 2) return -1;\n"
-        "    if (s.successes.length !== 2) return -2;\n"
-        "    if (s.exceptions.length !== 2) return -3;\n"
-        "    if (s.oom_errors.length !== 2) return -4;\n"
-        "    if (s.budget_exceeded.length !== 2) return -5;\n"
-        "    if (s.nested_dropped.length !== 2) return -6;\n"
+        "    mbpf.stats(_statsOut);\n"
+        "    if (_statsOut.invocations.length !== 2) return -1;\n"
+        "    if (_statsOut.successes.length !== 2) return -2;\n"
+        "    if (_statsOut.exceptions.length !== 2) return -3;\n"
+        "    if (_statsOut.oom_errors.length !== 2) return -4;\n"
+        "    if (_statsOut.budget_exceeded.length !== 2) return -5;\n"
+        "    if (_statsOut.nested_dropped.length !== 2) return -6;\n"
         "    return 0;\n"
         "}\n";
 
@@ -353,10 +369,11 @@ TEST(stats_values_are_u64_pairs) {
  */
 TEST(invocation_count_starts_zero) {
     const char *js_code =
+        STATS_PREALLOC
         "function mbpf_prog(ctx) {\n"
-        "    var s = mbpf.stats();\n"
+        "    mbpf.stats(_statsOut);\n"
         "    /* On first run, invocations should be 0 (not yet incremented) */\n"
-        "    if (s.invocations[0] !== 0 || s.invocations[1] !== 0) return -1;\n"
+        "    if (_statsOut.invocations[0] !== 0 || _statsOut.invocations[1] !== 0) return -1;\n"
         "    return 0;\n"
         "}\n";
 
@@ -401,11 +418,12 @@ TEST(invocation_count_starts_zero) {
  */
 TEST(invocation_count_increments) {
     const char *js_code =
+        STATS_PREALLOC
         "var run_num = 0;\n"
         "function mbpf_prog(ctx) {\n"
-        "    var s = mbpf.stats();\n"
+        "    mbpf.stats(_statsOut);\n"
         "    /* Stats are updated before invocation++ so we see run_num */\n"
-        "    if (s.invocations[0] !== run_num) return -1;\n"
+        "    if (_statsOut.invocations[0] !== run_num) return -1;\n"
         "    run_num++;\n"
         "    return 0;\n"
         "}\n";
@@ -454,11 +472,12 @@ TEST(invocation_count_increments) {
  */
 TEST(success_count_tracks) {
     const char *js_code =
+        STATS_PREALLOC
         "var run_num = 0;\n"
         "function mbpf_prog(ctx) {\n"
-        "    var s = mbpf.stats();\n"
+        "    mbpf.stats(_statsOut);\n"
         "    /* Successes should equal run_num (previous successful runs) */\n"
-        "    if (s.successes[0] !== run_num) return -1;\n"
+        "    if (_statsOut.successes[0] !== run_num) return -1;\n"
         "    run_num++;\n"
         "    return 0;\n"
         "}\n";
@@ -503,16 +522,24 @@ TEST(success_count_tracks) {
 }
 
 /*
- * Test 8: stats returns fresh copies (not references)
+ * Test 8: stats writes to same object (no allocation per call)
+ * This test verifies that calling stats() multiple times writes to
+ * the same preallocated object, confirming allocation-free behavior.
  */
-TEST(stats_returns_fresh_copies) {
+TEST(stats_writes_to_same_object) {
     const char *js_code =
+        STATS_PREALLOC
         "function mbpf_prog(ctx) {\n"
-        "    var s1 = mbpf.stats();\n"
-        "    var s2 = mbpf.stats();\n"
-        "    /* Modifying s1 should not affect s2 */\n"
-        "    s1.invocations[0] = 999;\n"
-        "    if (s2.invocations[0] === 999) return -1;  /* Shared reference! */\n"
+        "    /* First call writes stats */\n"
+        "    mbpf.stats(_statsOut);\n"
+        "    var inv1 = _statsOut.invocations[0];\n"
+        "    /* Modify the object */\n"
+        "    _statsOut.invocations[0] = 999;\n"
+        "    /* Second call overwrites the same object */\n"
+        "    mbpf.stats(_statsOut);\n"
+        "    /* Should have the real value again, not 999 */\n"
+        "    if (_statsOut.invocations[0] === 999) return -1;\n"
+        "    if (_statsOut.invocations[0] !== inv1) return -2;\n"
         "    return 0;\n"
         "}\n";
 
@@ -557,9 +584,10 @@ TEST(stats_returns_fresh_copies) {
  */
 TEST(exception_count_zero_initially) {
     const char *js_code =
+        STATS_PREALLOC
         "function mbpf_prog(ctx) {\n"
-        "    var s = mbpf.stats();\n"
-        "    if (s.exceptions[0] !== 0 || s.exceptions[1] !== 0) return -1;\n"
+        "    mbpf.stats(_statsOut);\n"
+        "    if (_statsOut.exceptions[0] !== 0 || _statsOut.exceptions[1] !== 0) return -1;\n"
         "    return 0;\n"
         "}\n";
 
@@ -604,21 +632,22 @@ TEST(exception_count_zero_initially) {
  */
 TEST(all_counters_accessible) {
     const char *js_code =
+        STATS_PREALLOC
         "function mbpf_prog(ctx) {\n"
-        "    var s = mbpf.stats();\n"
+        "    mbpf.stats(_statsOut);\n"
         "    /* All should be numbers (lo parts) */\n"
-        "    if (typeof s.invocations[0] !== 'number') return -1;\n"
-        "    if (typeof s.invocations[1] !== 'number') return -2;\n"
-        "    if (typeof s.successes[0] !== 'number') return -3;\n"
-        "    if (typeof s.successes[1] !== 'number') return -4;\n"
-        "    if (typeof s.exceptions[0] !== 'number') return -5;\n"
-        "    if (typeof s.exceptions[1] !== 'number') return -6;\n"
-        "    if (typeof s.oom_errors[0] !== 'number') return -7;\n"
-        "    if (typeof s.oom_errors[1] !== 'number') return -8;\n"
-        "    if (typeof s.budget_exceeded[0] !== 'number') return -9;\n"
-        "    if (typeof s.budget_exceeded[1] !== 'number') return -10;\n"
-        "    if (typeof s.nested_dropped[0] !== 'number') return -11;\n"
-        "    if (typeof s.nested_dropped[1] !== 'number') return -12;\n"
+        "    if (typeof _statsOut.invocations[0] !== 'number') return -1;\n"
+        "    if (typeof _statsOut.invocations[1] !== 'number') return -2;\n"
+        "    if (typeof _statsOut.successes[0] !== 'number') return -3;\n"
+        "    if (typeof _statsOut.successes[1] !== 'number') return -4;\n"
+        "    if (typeof _statsOut.exceptions[0] !== 'number') return -5;\n"
+        "    if (typeof _statsOut.exceptions[1] !== 'number') return -6;\n"
+        "    if (typeof _statsOut.oom_errors[0] !== 'number') return -7;\n"
+        "    if (typeof _statsOut.oom_errors[1] !== 'number') return -8;\n"
+        "    if (typeof _statsOut.budget_exceeded[0] !== 'number') return -9;\n"
+        "    if (typeof _statsOut.budget_exceeded[1] !== 'number') return -10;\n"
+        "    if (typeof _statsOut.nested_dropped[0] !== 'number') return -11;\n"
+        "    if (typeof _statsOut.nested_dropped[1] !== 'number') return -12;\n"
         "    return 0;\n"
         "}\n";
 
@@ -714,6 +743,128 @@ TEST(stats_match_host_api) {
     return 0;
 }
 
+/*
+ * Test 12: stats throws if out parameter is not an object
+ */
+TEST(stats_throws_on_invalid_out) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    try {\n"
+        "        mbpf.stats(null);\n"
+        "        return -1;  /* Should have thrown */\n"
+        "    } catch (e) {\n"
+        "        if (!(e instanceof TypeError)) return -2;\n"
+        "    }\n"
+        "    try {\n"
+        "        mbpf.stats(123);\n"
+        "        return -3;  /* Should have thrown */\n"
+        "    } catch (e) {\n"
+        "        if (!(e instanceof TypeError)) return -4;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg),
+                                         bytecode, bc_len,
+                                         MBPF_HOOK_TRACEPOINT,
+                                         "\"CAP_LOG\",\"CAP_STATS\"");
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_config_t cfg = {
+        .allowed_capabilities = MBPF_CAP_LOG | MBPF_CAP_STATS,
+    };
+    mbpf_runtime_t *rt = mbpf_runtime_init(&cfg);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    ASSERT_EQ(err, MBPF_OK);
+
+    err = mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+    ASSERT_EQ(err, MBPF_OK);
+
+    int32_t rc = -99;
+    err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, NULL, 0, &rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(rc, 0);
+
+    mbpf_program_detach(rt, prog, MBPF_HOOK_TRACEPOINT);
+    mbpf_program_unload(rt, prog);
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
+ * Test 13: stats throws if out object has missing/invalid arrays
+ */
+TEST(stats_throws_on_missing_arrays) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    try {\n"
+        "        mbpf.stats({});  /* Empty object */\n"
+        "        return -1;  /* Should have thrown */\n"
+        "    } catch (e) {\n"
+        "        if (!(e instanceof TypeError)) return -2;\n"
+        "    }\n"
+        "    try {\n"
+        "        /* Object with wrong type for invocations */\n"
+        "        mbpf.stats({invocations: 'not an array'});\n"
+        "        return -3;  /* Should have thrown */\n"
+        "    } catch (e) {\n"
+        "        if (!(e instanceof TypeError)) return -4;\n"
+        "    }\n"
+        "    try {\n"
+        "        /* Array too short */\n"
+        "        mbpf.stats({invocations: [0]});\n"
+        "        return -5;  /* Should have thrown */\n"
+        "    } catch (e) {\n"
+        "        if (!(e instanceof TypeError)) return -6;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg),
+                                         bytecode, bc_len,
+                                         MBPF_HOOK_TRACEPOINT,
+                                         "\"CAP_LOG\",\"CAP_STATS\"");
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_config_t cfg = {
+        .allowed_capabilities = MBPF_CAP_LOG | MBPF_CAP_STATS,
+    };
+    mbpf_runtime_t *rt = mbpf_runtime_init(&cfg);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    ASSERT_EQ(err, MBPF_OK);
+
+    err = mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+    ASSERT_EQ(err, MBPF_OK);
+
+    int32_t rc = -99;
+    err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, NULL, 0, &rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(rc, 0);
+
+    mbpf_program_detach(rt, prog, MBPF_HOOK_TRACEPOINT);
+    mbpf_program_unload(rt, prog);
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
 /* ============================================================================
  * Main
  * ============================================================================ */
@@ -730,7 +881,7 @@ int main(void) {
     RUN_TEST(function_not_exists_without_cap_stats);
 
     printf("\nBasic functionality tests:\n");
-    RUN_TEST(stats_returns_object_with_properties);
+    RUN_TEST(stats_writes_to_preallocated_object);
     RUN_TEST(stats_values_are_u64_pairs);
     RUN_TEST(all_counters_accessible);
 
@@ -740,8 +891,12 @@ int main(void) {
     RUN_TEST(success_count_tracks);
     RUN_TEST(exception_count_zero_initially);
 
-    printf("\nAdvanced tests:\n");
-    RUN_TEST(stats_returns_fresh_copies);
+    printf("\nAllocation-free tests:\n");
+    RUN_TEST(stats_writes_to_same_object);
+    RUN_TEST(stats_throws_on_invalid_out);
+    RUN_TEST(stats_throws_on_missing_arrays);
+
+    printf("\nIntegration tests:\n");
     RUN_TEST(stats_match_host_api);
 
     printf("\n===========================\n");

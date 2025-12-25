@@ -840,19 +840,31 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
             : "",
         has_cap_stats ?
             ","
-            "stats:function(){"
+            "stats:function(out){"
                 "ch();"
-                /* Returns a new object with the current stats values.
-                 * Each value is a fresh [lo, hi] array (copy, not reference). */
+                /* Writes current stats into a preallocated output object.
+                 * out must be an object with arrays for each stat field.
+                 * This is allocation-free on the success path per §7.5.3. */
+                "if(typeof out!=='object'||out===null)throw new TypeError('out must be an object');"
                 "var s=_mbpf_stats;"
-                "return{"
-                    "invocations:[s.invocations[0],s.invocations[1]],"
-                    "successes:[s.successes[0],s.successes[1]],"
-                    "exceptions:[s.exceptions[0],s.exceptions[1]],"
-                    "oom_errors:[s.oom_errors[0],s.oom_errors[1]],"
-                    "budget_exceeded:[s.budget_exceeded[0],s.budget_exceeded[1]],"
-                    "nested_dropped:[s.nested_dropped[0],s.nested_dropped[1]]"
-                "};"
+                "if(!Array.isArray(out.invocations)||out.invocations.length<2)"
+                    "throw new TypeError('out.invocations must be array of length 2');"
+                "if(!Array.isArray(out.successes)||out.successes.length<2)"
+                    "throw new TypeError('out.successes must be array of length 2');"
+                "if(!Array.isArray(out.exceptions)||out.exceptions.length<2)"
+                    "throw new TypeError('out.exceptions must be array of length 2');"
+                "if(!Array.isArray(out.oom_errors)||out.oom_errors.length<2)"
+                    "throw new TypeError('out.oom_errors must be array of length 2');"
+                "if(!Array.isArray(out.budget_exceeded)||out.budget_exceeded.length<2)"
+                    "throw new TypeError('out.budget_exceeded must be array of length 2');"
+                "if(!Array.isArray(out.nested_dropped)||out.nested_dropped.length<2)"
+                    "throw new TypeError('out.nested_dropped must be array of length 2');"
+                "out.invocations[0]=s.invocations[0];out.invocations[1]=s.invocations[1];"
+                "out.successes[0]=s.successes[0];out.successes[1]=s.successes[1];"
+                "out.exceptions[0]=s.exceptions[0];out.exceptions[1]=s.exceptions[1];"
+                "out.oom_errors[0]=s.oom_errors[0];out.oom_errors[1]=s.oom_errors[1];"
+                "out.budget_exceeded[0]=s.budget_exceeded[0];out.budget_exceeded[1]=s.budget_exceeded[1];"
+                "out.nested_dropped[0]=s.nested_dropped[0];out.nested_dropped[1]=s.nested_dropped[1];"
             "}"
             : "");
 
@@ -5384,12 +5396,12 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     if (prog->manifest.capabilities & MBPF_CAP_STATS) {
         char stats_code[512];
         snprintf(stats_code, sizeof(stats_code),
-            "_mbpf_stats.invocations=[%u,%u];"
-            "_mbpf_stats.successes=[%u,%u];"
-            "_mbpf_stats.exceptions=[%u,%u];"
-            "_mbpf_stats.oom_errors=[%u,%u];"
-            "_mbpf_stats.budget_exceeded=[%u,%u];"
-            "_mbpf_stats.nested_dropped=[%u,%u];",
+            "_mbpf_stats.invocations[0]=%u;_mbpf_stats.invocations[1]=%u;"
+            "_mbpf_stats.successes[0]=%u;_mbpf_stats.successes[1]=%u;"
+            "_mbpf_stats.exceptions[0]=%u;_mbpf_stats.exceptions[1]=%u;"
+            "_mbpf_stats.oom_errors[0]=%u;_mbpf_stats.oom_errors[1]=%u;"
+            "_mbpf_stats.budget_exceeded[0]=%u;_mbpf_stats.budget_exceeded[1]=%u;"
+            "_mbpf_stats.nested_dropped[0]=%u;_mbpf_stats.nested_dropped[1]=%u;",
             (uint32_t)(prog->stats.invocations & 0xFFFFFFFFULL),
             (uint32_t)(prog->stats.invocations >> 32),
             (uint32_t)(prog->stats.successes & 0xFFFFFFFFULL),

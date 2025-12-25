@@ -850,10 +850,14 @@ TEST(cap_time_without_cap) {
  */
 TEST(cap_stats_with_cap) {
     const char *js_code =
+        "var _statsOut = {\n"
+        "    invocations: [0, 0], successes: [0, 0], exceptions: [0, 0],\n"
+        "    oom_errors: [0, 0], budget_exceeded: [0, 0], nested_dropped: [0, 0]\n"
+        "};\n"
         "function mbpf_prog(ctx) {\n"
         "    if (typeof mbpf.stats !== 'function') return -1;\n"
-        "    var s = mbpf.stats();\n"
-        "    if (!s || !s.invocations) return -2;\n"
+        "    mbpf.stats(_statsOut);\n"
+        "    if (!_statsOut || !_statsOut.invocations) return -2;\n"
         "    return 0;\n"
         "}\n";
 

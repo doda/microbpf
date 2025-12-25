@@ -89,3 +89,4 @@ budget-max-wall-time: reviewed and fixed wall time elapsed calculation
 2025-12-25 api-version-enforcement: reviewed helper API version compatibility enforcement and tests.
 2025-12-25 per-helper-versioning: reviewed per-helper version enforcement and tests.
 2025-12-25 typed-array-shim: reviewed typed array shim and fixed JS_Eval lengths in tests.
+- 2025-01-13: Verified allocation-free helper behavior; added tests, updated stats helper to require preallocated output, and documented API change.

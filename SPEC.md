@@ -561,7 +561,7 @@ Runtimes MAY also implement (capability-gated by policy):
 
 - `mbpf.nowNs(out /* u64 */) -> void`
   - Writes the current monotonic time in nanoseconds into `out` as a `u64` (§10.5.1).
-- `mbpf.stats()` or `mbpf.stat(name)` (debug/telemetry; shape is platform-defined).
+- `mbpf.stats(out)` or `mbpf.stat(name)` (debug/telemetry; shape is platform-defined).
 
 ### 11.2 Event Output (optional)
 
