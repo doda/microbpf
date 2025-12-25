@@ -400,6 +400,16 @@ if [ -f build/test_helper_log ]; then
     fi
 fi
 
+# Run budget interrupt handler tests
+if [ -f build/test_budget_interrupt_handler ]; then
+    ./build/test_budget_interrupt_handler
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Budget interrupt handler tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

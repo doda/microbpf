@@ -78,3 +78,4 @@ exception-handling: reviewed exception defaults and tests
 2025-12-25 budget-max-steps: enforced max_steps budget via interrupt handler and tests.
 2025-12-25 budget-max-helpers: enforced max_helpers helper budget and added tests.
 budget-max-wall-time: reviewed and fixed wall time elapsed calculation
+2025-12-25 budget-interrupt-handler: added interrupt handler budget enforcement tests.

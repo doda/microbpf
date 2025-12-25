@@ -663,7 +663,7 @@
       "Verify handler returns non-zero to abort on budget exceeded",
       "Verify JS_SetContextOpaque stores instance for counter access"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "memory-heap-size",
