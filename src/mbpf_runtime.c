@@ -675,6 +675,37 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                         "}"
                     "}"
                     "return false;"
+                "},"
+                /* nextKey(prevKey, outKey) - returns next key after prevKey, false if no more */
+                "nextKey:function(prevKey,outKey){"
+                    "if(!(outKey instanceof Uint8Array))throw new TypeError('outKey must be Uint8Array');"
+                    "if(outKey.length<kS)throw new RangeError('outKey too small');"
+                    "if(typeof _helperCount!=='undefined')_helperCount++;"  /* Count toward budget */
+                    "var start=0;"
+                    "if(prevKey!==null&&prevKey!==undefined){"
+                        "if(!(prevKey instanceof Uint8Array))throw new TypeError('prevKey must be null or Uint8Array');"
+                        "if(prevKey.length<kS)throw new RangeError('prevKey too small');"
+                        /* Find prevKey's bucket, then start scanning from the next bucket */
+                        "var h=fnv(prevKey)%%maxE;"
+                        "for(var i=0;i<maxE;i++){"
+                            "var idx=(h+i)%%maxE;"
+                            "var off=idx*bS;"
+                            "if(d[off]===0)break;"  /* prevKey not found (empty slot) */
+                            "if(d[off]===1&&keq(off,prevKey)){"
+                                "start=idx+1;"  /* Start from bucket after prevKey */
+                                "break;"
+                            "}"
+                        "}"
+                    "}"
+                    /* Scan from start for next valid entry */
+                    "for(var i=start;i<maxE;i++){"
+                        "var off=i*bS;"
+                        "if(d[off]===1){"  /* Valid entry */
+                            "for(var j=0;j<kS;j++)outKey[j]=d[off+1+j];"
+                            "return true;"
+                        "}"
+                    "}"
+                    "return false;"  /* No more keys */
                 "}"
                 "};"
                 "})();",
@@ -876,6 +907,37 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                         "}"
                     "}"
                     "return false;"
+                "},"
+                /* nextKey(prevKey, outKey) - returns next key after prevKey, false if no more */
+                "nextKey:function(prevKey,outKey){"
+                    "if(!(outKey instanceof Uint8Array))throw new TypeError('outKey must be Uint8Array');"
+                    "if(outKey.length<kS)throw new RangeError('outKey too small');"
+                    "if(typeof _helperCount!=='undefined')_helperCount++;"  /* Count toward budget */
+                    "var start=0;"
+                    "if(prevKey!==null&&prevKey!==undefined){"
+                        "if(!(prevKey instanceof Uint8Array))throw new TypeError('prevKey must be null or Uint8Array');"
+                        "if(prevKey.length<kS)throw new RangeError('prevKey too small');"
+                        /* Find prevKey's bucket, then start scanning from the next bucket */
+                        "var h=fnv(prevKey)%%maxE;"
+                        "for(var i=0;i<maxE;i++){"
+                            "var idx=(h+i)%%maxE;"
+                            "var off=idx*bS;"
+                            "if(d[off]===0)break;"  /* prevKey not found (empty slot) */
+                            "if(d[off]===1&&keq(off,prevKey)){"
+                                "start=idx+1;"  /* Start from bucket after prevKey */
+                                "break;"
+                            "}"
+                        "}"
+                    "}"
+                    /* Scan from start for next valid entry */
+                    "for(var i=start;i<maxE;i++){"
+                        "var off=i*bS;"
+                        "if(d[off]===1){"  /* Valid entry */
+                            "for(var j=0;j<kS;j++)outKey[j]=d[off+9+j];"  /* LRU key at offset 9 */
+                            "return true;"
+                        "}"
+                    "}"
+                    "return false;"  /* No more keys */
                 "}"
                 "};"
                 "})();",
@@ -1033,6 +1095,35 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                         "if(d[off]===1&&keq(off,keyBuf)){"
                             "d[off]=2;"
                             "m.count--;"
+                            "return true;"
+                        "}"
+                    "}"
+                    "return false;"
+                "},"
+                /* nextKey(prevKey, outKey) - returns next key after prevKey, false if no more */
+                "nextKey:function(prevKey,outKey){"
+                    "if(!(outKey instanceof Uint8Array))throw new TypeError('outKey must be Uint8Array');"
+                    "if(outKey.length<kS)throw new RangeError('outKey too small');"
+                    "if(typeof _helperCount!=='undefined')_helperCount++;"  /* Count toward budget */
+                    "var start=0;"
+                    "if(prevKey!==null&&prevKey!==undefined){"
+                        "if(!(prevKey instanceof Uint8Array))throw new TypeError('prevKey must be null or Uint8Array');"
+                        "if(prevKey.length<kS)throw new RangeError('prevKey too small');"
+                        "var h=fnv(prevKey)%%maxE;"
+                        "for(var i=0;i<maxE;i++){"
+                            "var idx=(h+i)%%maxE;"
+                            "var off=idx*bS;"
+                            "if(d[off]===0)break;"
+                            "if(d[off]===1&&keq(off,prevKey)){"
+                                "start=idx+1;"
+                                "break;"
+                            "}"
+                        "}"
+                    "}"
+                    "for(var i=start;i<maxE;i++){"
+                        "var off=i*bS;"
+                        "if(d[off]===1){"
+                            "for(var j=0;j<kS;j++)outKey[j]=d[off+1+j];"
                             "return true;"
                         "}"
                     "}"

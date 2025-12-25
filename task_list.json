@@ -505,7 +505,7 @@
       "Verify all keys are visited",
       "Verify iteration counts toward max_helpers budget"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-persistence",

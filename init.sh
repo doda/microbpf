@@ -360,6 +360,16 @@ if [ -f build/test_counter_map ]; then
     fi
 fi
 
+# Run map iteration tests
+if [ -f build/test_map_iteration ]; then
+    ./build/test_map_iteration
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Map iteration tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
