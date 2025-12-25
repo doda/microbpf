@@ -75,3 +75,4 @@ exception-handling: reviewed exception defaults and tests
 - 2025-12-25: Completed helper-emit review with mbpf.emit buffer sync and tests.
 - 2025-12-25: Completed helper-stats review with mbpf.stats helper gating, runtime sync, and tests.
 2025-12-25 helper-map-lowlevel: added low-level map helpers and tests.
+2025-12-25 budget-max-steps: enforced max_steps budget via interrupt handler and tests.

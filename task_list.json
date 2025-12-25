@@ -626,7 +626,7 @@
       "Verify budget exceeded is counted in stats",
       "Verify safe default is returned on budget exceeded"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "budget-max-helpers",

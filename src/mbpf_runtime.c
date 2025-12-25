@@ -171,6 +171,10 @@ struct mbpf_instance {
     volatile int in_use;        /* Nested execution prevention flag */
     uint32_t index;             /* Instance index (for debugging) */
     struct mbpf_program *program; /* Back pointer to owning program */
+    /* Step budget tracking for max_steps enforcement */
+    uint32_t max_steps;         /* Maximum steps allowed per invocation */
+    volatile uint32_t steps_remaining; /* Steps remaining in current invocation */
+    volatile int budget_exceeded; /* Flag set when budget is exceeded */
 };
 
 /* Internal structures */
@@ -217,6 +221,34 @@ static void default_log_fn(int level, const char *msg) {
         case 3: level_str = "ERROR"; break;
     }
     fprintf(stderr, "[mbpf %s] %s\n", level_str, msg);
+}
+
+/*
+ * Interrupt handler for step budget enforcement.
+ * Called by MQuickJS periodically during execution.
+ * Returns non-zero to abort execution when budget is exceeded.
+ */
+static int mbpf_interrupt_handler(JSContext *ctx, void *opaque) {
+    (void)ctx;  /* Unused parameter */
+    mbpf_instance_t *inst = (mbpf_instance_t *)opaque;
+    if (!inst) {
+        return 0;  /* No instance context, continue execution */
+    }
+
+    /* If max_steps is 0, no budget enforcement */
+    if (inst->max_steps == 0) {
+        return 0;
+    }
+
+    /* Decrement steps remaining and check if exceeded */
+    if (inst->steps_remaining > 0) {
+        inst->steps_remaining--;
+        return 0;  /* Continue execution */
+    }
+
+    /* Budget exceeded - set flag and abort */
+    inst->budget_exceeded = 1;
+    return 1;  /* Non-zero aborts execution */
 }
 
 /*
@@ -2537,6 +2569,19 @@ static int create_instance(mbpf_program_t *prog, uint32_t idx, size_t heap_size,
     /* Set context opaque to point to instance for budget tracking */
     JS_SetContextOpaque(inst->js_ctx, inst);
 
+    /* Set up interrupt handler for step budget enforcement */
+    JS_SetInterruptHandler(inst->js_ctx, mbpf_interrupt_handler);
+
+    /* Initialize step budget from manifest */
+    uint32_t max_steps = prog->manifest.budgets.max_steps;
+    /* If manifest doesn't specify, use runtime default */
+    if (max_steps == 0 && prog->runtime) {
+        max_steps = prog->runtime->config.default_max_steps;
+    }
+    inst->max_steps = max_steps;
+    inst->steps_remaining = max_steps;
+    inst->budget_exceeded = 0;
+
     /* Each instance needs its own copy of bytecode for relocation.
      * The bytecode must be kept alive as long as the context exists
      * because JS_LoadBytecode keeps a reference to it. */
@@ -4748,6 +4793,10 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_ERR_NESTED_EXEC;
     }
 
+    /* Reset step budget for this invocation */
+    inst->steps_remaining = inst->max_steps;
+    inst->budget_exceeded = 0;
+
     /* Set up log context for mbpf.log helper */
     mbpf_set_log_context((void *)prog->runtime->config.log_fn,
                          prog->runtime->config.debug_mode);
@@ -4982,7 +5031,12 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     JSValue result = JS_Call(ctx, 1);  /* 1 argument */
 
     if (JS_IsException(result)) {
-        prog->stats.exceptions++;
+        /* Check if this exception was due to budget exceeded */
+        if (inst->budget_exceeded) {
+            prog->stats.budget_exceeded++;
+        } else {
+            prog->stats.exceptions++;
+        }
         JS_GetException(ctx);  /* Clear the exception */
         *out_rc = exception_default;
         mbpf_clear_log_context();
