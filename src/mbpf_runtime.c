@@ -5504,6 +5504,11 @@ int mbpf_run(mbpf_runtime_t *rt, mbpf_hook_id_t hook,
                  * For now, the last program's return value wins. */
                 *out_rc = prog_rc;
                 programs_run++;
+            } else if (err == MBPF_ERR_NESTED_EXEC) {
+                /* Nested execution was detected. prog_rc contains the safe
+                 * default (set by run_on_instance). Propagate it so the
+                 * caller gets the appropriate fail-safe value. */
+                *out_rc = prog_rc;
             }
         }
     }

@@ -726,7 +726,7 @@
       "Verify nested invocation is counted in stats",
       "Verify in_use flag is atomically managed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "failure-isolation",
