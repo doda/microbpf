@@ -406,6 +406,87 @@ int mbpf_emit_dropped(mbpf_program_t *prog);
  * Always returns false if circuit breaker is not configured. */
 bool mbpf_program_circuit_open(mbpf_program_t *prog);
 
+/* ============================================================================
+ * Debug Info API
+ * ============================================================================
+ *
+ * Programs may contain an optional DEBUG section with symbol names and
+ * source hash for debugging and provenance tracking.
+ */
+
+/* Forward declaration for debug info (defined in mbpf_package.h) */
+struct mbpf_debug_info;
+
+/*
+ * Check if a program has debug info available.
+ *
+ * Parameters:
+ *   prog - The program to check
+ *
+ * Returns:
+ *   true if debug info is available, false otherwise
+ */
+bool mbpf_program_has_debug_info(mbpf_program_t *prog);
+
+/*
+ * Get the entry symbol name from debug info.
+ *
+ * Parameters:
+ *   prog - The program to query
+ *
+ * Returns:
+ *   The entry symbol name, or NULL if no debug info available
+ */
+const char *mbpf_program_debug_entry_symbol(mbpf_program_t *prog);
+
+/*
+ * Get the hook name from debug info.
+ *
+ * Parameters:
+ *   prog - The program to query
+ *
+ * Returns:
+ *   The hook name, or NULL if no debug info available
+ */
+const char *mbpf_program_debug_hook_name(mbpf_program_t *prog);
+
+/*
+ * Get the source hash from debug info for provenance tracking.
+ *
+ * Parameters:
+ *   prog     - The program to query
+ *   out_hash - Receives the 32-byte SHA-256 source hash
+ *
+ * Returns:
+ *   MBPF_OK if source hash is available
+ *   MBPF_ERR_MISSING_SECTION if no debug info or no source hash
+ *   MBPF_ERR_INVALID_ARG if arguments are NULL
+ */
+int mbpf_program_debug_source_hash(mbpf_program_t *prog, uint8_t out_hash[32]);
+
+/*
+ * Get the number of map names in debug info.
+ *
+ * Parameters:
+ *   prog - The program to query
+ *
+ * Returns:
+ *   Number of map names, or 0 if no debug info available
+ */
+uint32_t mbpf_program_debug_map_count(mbpf_program_t *prog);
+
+/*
+ * Get a map name by index from debug info.
+ *
+ * Parameters:
+ *   prog  - The program to query
+ *   index - The map index (0-based)
+ *
+ * Returns:
+ *   The map name, or NULL if index out of bounds or no debug info
+ */
+const char *mbpf_program_debug_map_name(mbpf_program_t *prog, uint32_t index);
+
 /* Manually reset a program's circuit breaker, closing the circuit
  * and allowing the program to run again. Returns MBPF_OK on success. */
 int mbpf_program_circuit_reset(mbpf_program_t *prog);

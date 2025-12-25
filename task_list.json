@@ -978,7 +978,7 @@
       "Load package and verify debug info is available",
       "Verify source hash for provenance tracking"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "target-word-size",

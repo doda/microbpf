@@ -309,6 +309,10 @@ struct mbpf_program {
     uint32_t consecutive_failures; /* Count of consecutive failures */
     bool circuit_open;             /* True if circuit breaker is tripped */
     struct timespec circuit_open_time; /* Time when circuit was opened */
+
+    /* Debug info (optional, from MBPF_SEC_DEBUG section) */
+    mbpf_debug_info_t debug_info;
+    bool has_debug_info;
 };
 
 /* Default log handler */
@@ -3464,6 +3468,14 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         }
     }
 
+    /* Try to load debug info (optional, failure is not fatal) */
+    prog->has_debug_info = false;
+    err = mbpf_package_get_debug_info(pkg, pkg_len, &prog->debug_info);
+    if (err == MBPF_OK) {
+        prog->has_debug_info = true;
+    }
+    /* err == MBPF_ERR_MISSING_SECTION is fine - debug info is optional */
+
     /* Add to runtime's program list */
     prog->next = rt->programs;
     rt->programs = prog;
@@ -3573,6 +3585,12 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
 
     /* Clean up map storage */
     free_maps(prog);
+
+    /* Clean up debug info if present */
+    if (prog->has_debug_info) {
+        mbpf_debug_info_free(&prog->debug_info);
+        prog->has_debug_info = false;
+    }
 
     mbpf_manifest_free(&prog->manifest);
     if (prog->bytecode) {
@@ -6668,4 +6686,51 @@ uint64_t mbpf_deferred_dropped(const mbpf_deferred_queue_t *queue) {
         return 0;
     }
     return __atomic_load_n(&queue->dropped, __ATOMIC_ACQUIRE);
+}
+
+/* ============================================================================
+ * Debug Info Query API
+ * ============================================================================ */
+
+bool mbpf_program_has_debug_info(mbpf_program_t *prog) {
+    if (!prog) return false;
+    return prog->has_debug_info;
+}
+
+const char *mbpf_program_debug_entry_symbol(mbpf_program_t *prog) {
+    if (!prog || !prog->has_debug_info) return NULL;
+    if (prog->debug_info.entry_symbol[0] == '\0') return NULL;
+    return prog->debug_info.entry_symbol;
+}
+
+const char *mbpf_program_debug_hook_name(mbpf_program_t *prog) {
+    if (!prog || !prog->has_debug_info) return NULL;
+    if (prog->debug_info.hook_name[0] == '\0') return NULL;
+    return prog->debug_info.hook_name;
+}
+
+int mbpf_program_debug_source_hash(mbpf_program_t *prog, uint8_t out_hash[32]) {
+    if (!prog || !out_hash) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+    if (!prog->has_debug_info) {
+        return MBPF_ERR_MISSING_SECTION;
+    }
+    if (!(prog->debug_info.flags & MBPF_DEBUG_FLAG_HAS_SOURCE_HASH)) {
+        return MBPF_ERR_MISSING_SECTION;
+    }
+    memcpy(out_hash, prog->debug_info.source_hash, 32);
+    return MBPF_OK;
+}
+
+uint32_t mbpf_program_debug_map_count(mbpf_program_t *prog) {
+    if (!prog || !prog->has_debug_info) return 0;
+    return prog->debug_info.map_count;
+}
+
+const char *mbpf_program_debug_map_name(mbpf_program_t *prog, uint32_t index) {
+    if (!prog || !prog->has_debug_info) return NULL;
+    if (index >= prog->debug_info.map_count) return NULL;
+    if (!prog->debug_info.map_names) return NULL;
+    return prog->debug_info.map_names[index];
 }

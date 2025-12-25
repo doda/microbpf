@@ -1803,3 +1803,167 @@ int mbpf_package_assemble(const mbpf_section_input_t *sections,
     *out_len = required;
     return MBPF_OK;
 }
+
+/* ============================================================================
+ * Debug Section (MBPF_SEC_DEBUG) Parsing
+ * ============================================================================ */
+
+/*
+ * Read a 32-bit little-endian value from a buffer.
+ */
+static uint32_t read_debug_le32(const uint8_t *buf) {
+    return (uint32_t)buf[0] |
+           ((uint32_t)buf[1] << 8) |
+           ((uint32_t)buf[2] << 16) |
+           ((uint32_t)buf[3] << 24);
+}
+
+/* Helper to read a u32 from buffer with bounds check */
+static int read_debug_u32(const uint8_t *buf, size_t len, size_t *offset, uint32_t *out) {
+    if (*offset + 4 > len) return -1;
+    *out = read_debug_le32(buf + *offset);
+    *offset += 4;
+    return 0;
+}
+
+/* Helper to read a string from buffer with bounds check */
+static int read_debug_string(const uint8_t *buf, size_t len, size_t *offset,
+                             char *out, size_t out_max) {
+    uint32_t str_len;
+    if (read_debug_u32(buf, len, offset, &str_len) < 0) return -1;
+
+    if (str_len == 0) {
+        out[0] = '\0';
+        return 0;
+    }
+
+    if (*offset + str_len > len) return -1;
+    uint32_t copy_len = str_len;
+    if (copy_len > out_max - 1) copy_len = out_max - 1;
+
+    memcpy(out, buf + *offset, copy_len);
+    out[copy_len] = '\0';
+    *offset += str_len;
+
+    return 0;
+}
+
+int mbpf_debug_info_parse(const void *debug_data, size_t debug_len,
+                          mbpf_debug_info_t *out_debug) {
+    if (!debug_data || !out_debug) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    memset(out_debug, 0, sizeof(*out_debug));
+
+    const uint8_t *buf = debug_data;
+    size_t offset = 0;
+
+    /* Minimum size: flags(4) + source_hash(32) + entry_len(4) + hook_len(4) + map_count(4) */
+    if (debug_len < 48) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    /* Read flags */
+    if (read_debug_u32(buf, debug_len, &offset, &out_debug->flags) < 0) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    /* Read source hash */
+    if (offset + 32 > debug_len) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+    memcpy(out_debug->source_hash, buf + offset, 32);
+    offset += 32;
+
+    /* Read entry symbol */
+    if (read_debug_string(buf, debug_len, &offset, out_debug->entry_symbol,
+                          MBPF_DEBUG_MAX_SYMBOL_LEN) < 0) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    /* Read hook name */
+    if (read_debug_string(buf, debug_len, &offset, out_debug->hook_name,
+                          MBPF_DEBUG_MAX_SYMBOL_LEN) < 0) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    /* Read map count */
+    if (read_debug_u32(buf, debug_len, &offset, &out_debug->map_count) < 0) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
+
+    /* Allocate and read map names */
+    if (out_debug->map_count > 0) {
+        /* Sanity check on map count */
+        if (out_debug->map_count > 256) {
+            return MBPF_ERR_INVALID_PACKAGE;
+        }
+
+        out_debug->map_names = calloc(out_debug->map_count,
+                                       MBPF_DEBUG_MAX_SYMBOL_LEN);
+        if (!out_debug->map_names) {
+            return MBPF_ERR_NO_MEM;
+        }
+
+        for (uint32_t i = 0; i < out_debug->map_count; i++) {
+            if (read_debug_string(buf, debug_len, &offset,
+                                  out_debug->map_names[i],
+                                  MBPF_DEBUG_MAX_SYMBOL_LEN) < 0) {
+                mbpf_debug_info_free(out_debug);
+                return MBPF_ERR_INVALID_PACKAGE;
+            }
+        }
+    }
+
+    return MBPF_OK;
+}
+
+void mbpf_debug_info_free(mbpf_debug_info_t *debug) {
+    if (!debug) return;
+
+    if (debug->map_names) {
+        free(debug->map_names);
+        debug->map_names = NULL;
+    }
+    debug->map_count = 0;
+}
+
+int mbpf_package_has_debug(const void *data, size_t len, int *out_has_debug) {
+    if (!data || !out_has_debug) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    const void *debug_data;
+    size_t debug_len;
+    int err = mbpf_package_get_section(data, len, MBPF_SEC_DEBUG,
+                                        &debug_data, &debug_len);
+
+    if (err == MBPF_OK) {
+        *out_has_debug = 1;
+    } else if (err == MBPF_ERR_MISSING_SECTION) {
+        *out_has_debug = 0;
+        return MBPF_OK;
+    } else {
+        return err;
+    }
+
+    return MBPF_OK;
+}
+
+int mbpf_package_get_debug_info(const void *data, size_t len,
+                                 mbpf_debug_info_t *out_debug) {
+    if (!data || !out_debug) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    const void *debug_data;
+    size_t debug_len;
+    int err = mbpf_package_get_section(data, len, MBPF_SEC_DEBUG,
+                                        &debug_data, &debug_len);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    return mbpf_debug_info_parse(debug_data, debug_len, out_debug);
+}

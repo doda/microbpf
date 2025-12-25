@@ -124,6 +124,98 @@ int mbpf_package_validate_crc(const void *data, size_t len);
 int mbpf_package_validate_section_crc(const void *data, size_t len,
                                        const mbpf_section_desc_t *section);
 
+/* ============================================================================
+ * Debug Section API (MBPF_SEC_DEBUG)
+ * ============================================================================
+ *
+ * The DEBUG section is optional and contains symbol information for
+ * debugging and provenance tracking:
+ * - Symbol names (entry function, map names, hook names)
+ * - Source hash for provenance
+ *
+ * Section binary layout:
+ *   [4 bytes: flags]
+ *   [32 bytes: source_hash (SHA-256)]
+ *   [4 bytes: entry_symbol_len]
+ *   [entry_symbol_len bytes: entry_symbol (null-terminated)]
+ *   [4 bytes: hook_name_len]
+ *   [hook_name_len bytes: hook_name (null-terminated)]
+ *   [4 bytes: map_count]
+ *   For each map:
+ *     [4 bytes: name_len]
+ *     [name_len bytes: name (null-terminated)]
+ */
+
+/* Debug section flags */
+#define MBPF_DEBUG_FLAG_HAS_SOURCE_HASH  (1 << 0)
+
+/* Maximum symbol name length */
+#define MBPF_DEBUG_MAX_SYMBOL_LEN 128
+
+/* Debug info structure */
+typedef struct {
+    uint32_t flags;
+    uint8_t source_hash[32];          /* SHA-256 of source for provenance */
+    char entry_symbol[MBPF_DEBUG_MAX_SYMBOL_LEN];
+    char hook_name[MBPF_DEBUG_MAX_SYMBOL_LEN];
+    char (*map_names)[MBPF_DEBUG_MAX_SYMBOL_LEN];  /* Dynamically allocated */
+    uint32_t map_count;
+} mbpf_debug_info_t;
+
+/*
+ * Parse the DEBUG section from a package.
+ *
+ * Parameters:
+ *   debug_data   - Pointer to DEBUG section data
+ *   debug_len    - Length of DEBUG section
+ *   out_debug    - Receives parsed debug info
+ *
+ * Returns:
+ *   MBPF_OK on success
+ *   MBPF_ERR_INVALID_ARG if arguments are NULL
+ *   MBPF_ERR_INVALID_PACKAGE if section format is invalid
+ *
+ * Caller must call mbpf_debug_info_free() to release allocated memory.
+ */
+int mbpf_debug_info_parse(const void *debug_data, size_t debug_len,
+                          mbpf_debug_info_t *out_debug);
+
+/*
+ * Free memory allocated by mbpf_debug_info_parse.
+ * Safe to call with zeroed structure.
+ */
+void mbpf_debug_info_free(mbpf_debug_info_t *debug);
+
+/*
+ * Check if a package has a DEBUG section.
+ *
+ * Parameters:
+ *   data         - Package data
+ *   len          - Package length
+ *   out_has_debug - Receives 1 if has debug section, 0 otherwise
+ *
+ * Returns:
+ *   MBPF_OK on success
+ *   Error code on parse failure
+ */
+int mbpf_package_has_debug(const void *data, size_t len, int *out_has_debug);
+
+/*
+ * Get debug info from a package (convenience wrapper).
+ *
+ * Parameters:
+ *   data       - Package data
+ *   len        - Package length
+ *   out_debug  - Receives parsed debug info
+ *
+ * Returns:
+ *   MBPF_OK on success
+ *   MBPF_ERR_MISSING_SECTION if no DEBUG section
+ *   Other error codes on parse failure
+ */
+int mbpf_package_get_debug_info(const void *data, size_t len,
+                                 mbpf_debug_info_t *out_debug);
+
 /* Ed25519 signature constants */
 #define MBPF_ED25519_PUBLIC_KEY_SIZE 32
 #define MBPF_ED25519_SIGNATURE_SIZE  64

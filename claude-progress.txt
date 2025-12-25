@@ -104,3 +104,4 @@ toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL 
 2025-12-25 toolchain-signing: reviewed Ed25519 signing toolchain, tests, and verification flow.
 2025-12-25 observability-counters: reviewed per-program statistics counters.
 2025-12-25 observability-trace-logs: reviewed trace logging with rate limiting.
+2025-12-25 observability-debug-symbols: add debug section parsing and runtime API
