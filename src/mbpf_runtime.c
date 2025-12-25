@@ -214,6 +214,11 @@ struct mbpf_program {
     /* Emit event buffer for mbpf.emit() - shared across all instances */
     mbpf_emit_buffer_t *emit_buffer;
     bool has_emit_cap;          /* Whether program has CAP_EMIT */
+
+    /* Circuit breaker state */
+    uint32_t consecutive_failures; /* Count of consecutive failures */
+    bool circuit_open;             /* True if circuit breaker is tripped */
+    struct timespec circuit_open_time; /* Time when circuit was opened */
 };
 
 /* Default log handler */
@@ -2124,6 +2129,71 @@ static int32_t get_exception_default(mbpf_runtime_t *rt, mbpf_hook_type_t hook_t
         return rt->config.exception_default_fn(hook_type);
     }
     return mbpf_hook_exception_default(hook_type);
+}
+
+/*
+ * Circuit breaker helper: check if the circuit should remain open.
+ * Returns true if the circuit is open and the cooldown has not expired.
+ * If cooldown has expired, closes the circuit and returns false.
+ */
+static bool check_circuit_open(mbpf_program_t *prog) {
+    if (!prog || !prog->circuit_open) {
+        return false;
+    }
+
+    mbpf_runtime_t *rt = prog->runtime;
+    if (!rt || rt->config.circuit_breaker_cooldown_us == 0) {
+        return true;  /* No cooldown configured, circuit stays open indefinitely */
+    }
+
+    /* Check if cooldown period has elapsed */
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    /* Calculate elapsed time in microseconds */
+    int64_t elapsed_sec = now.tv_sec - prog->circuit_open_time.tv_sec;
+    int64_t elapsed_nsec = now.tv_nsec - prog->circuit_open_time.tv_nsec;
+    int64_t elapsed_us = elapsed_sec * 1000000 + elapsed_nsec / 1000;
+
+    if (elapsed_us >= (int64_t)rt->config.circuit_breaker_cooldown_us) {
+        /* Cooldown expired, close the circuit and reset failure count */
+        prog->circuit_open = false;
+        prog->consecutive_failures = 0;
+        return false;
+    }
+
+    return true;  /* Circuit is still open */
+}
+
+/*
+ * Circuit breaker helper: record a successful execution.
+ * Resets the consecutive failure counter.
+ */
+static void circuit_breaker_record_success(mbpf_program_t *prog) {
+    if (!prog) return;
+    prog->consecutive_failures = 0;
+}
+
+/*
+ * Circuit breaker helper: record a failed execution.
+ * Increments the failure counter and trips the circuit if threshold is exceeded.
+ */
+static void circuit_breaker_record_failure(mbpf_program_t *prog) {
+    if (!prog || !prog->runtime) return;
+
+    mbpf_runtime_t *rt = prog->runtime;
+    if (rt->config.circuit_breaker_threshold == 0) {
+        return;  /* Circuit breaker not configured */
+    }
+
+    prog->consecutive_failures++;
+
+    if (prog->consecutive_failures >= rt->config.circuit_breaker_threshold) {
+        /* Trip the circuit breaker */
+        prog->circuit_open = true;
+        clock_gettime(CLOCK_MONOTONIC, &prog->circuit_open_time);
+        prog->stats.circuit_breaker_trips++;
+    }
 }
 
 /*
@@ -5240,6 +5310,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         /* Check if this is an out-of-memory error first */
         if (is_oom_exception(ctx, exc)) {
             prog->stats.oom_errors++;
+            circuit_breaker_record_failure(prog);
             *out_rc = exception_default;
             mbpf_clear_log_context();
             __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
@@ -5259,6 +5330,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         } else {
             prog->stats.exceptions++;
         }
+        circuit_breaker_record_failure(prog);
         *out_rc = exception_default;
         mbpf_clear_log_context();
         __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
@@ -5276,6 +5348,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         }
         if (inst->budget_exceeded || helper_budget_exceeded) {
             prog->stats.budget_exceeded++;
+            circuit_breaker_record_failure(prog);
             *out_rc = exception_default;
             mbpf_clear_log_context();
             __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
@@ -5296,6 +5369,7 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
     }
 
     prog->stats.successes++;
+    circuit_breaker_record_success(prog);
 
     /* Sync ring buffer state from JS to C storage.
      * This allows host-side APIs to read events written by the program. */
@@ -5491,6 +5565,14 @@ int mbpf_run(mbpf_runtime_t *rt, mbpf_hook_id_t hook,
     /* Find and execute all attached programs for this hook */
     for (mbpf_program_t *prog = rt->programs; prog; prog = prog->next) {
         if (!prog->unloaded && prog->attached && prog->attached_hook == hook) {
+            /* Check circuit breaker before running */
+            if (check_circuit_open(prog)) {
+                /* Circuit is open, skip this program */
+                prog->stats.circuit_breaker_skipped++;
+                *out_rc = get_exception_default(rt, (mbpf_hook_type_t)hook);
+                continue;
+            }
+
             /* Select an instance for execution */
             mbpf_instance_t *inst = select_instance(prog);
             if (!inst) {
@@ -5835,4 +5917,22 @@ int mbpf_emit_dropped(mbpf_program_t *prog) {
         return -1;
     }
     return (int)prog->emit_buffer->dropped;
+}
+
+/* Circuit breaker API */
+
+bool mbpf_program_circuit_open(mbpf_program_t *prog) {
+    if (!prog) {
+        return false;
+    }
+    return check_circuit_open(prog);
+}
+
+int mbpf_program_circuit_reset(mbpf_program_t *prog) {
+    if (!prog) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+    prog->circuit_open = false;
+    prog->consecutive_failures = 0;
+    return MBPF_OK;
 }

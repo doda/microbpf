@@ -750,7 +750,7 @@
       "Verify program is temporarily disabled",
       "Verify program re-enables after cooldown period"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "api-version-enforcement",

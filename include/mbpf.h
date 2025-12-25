@@ -146,6 +146,9 @@ typedef struct mbpf_runtime_config {
     mbpf_instance_mode_t instance_mode;
     uint32_t instance_count;    /* Used when instance_mode == MBPF_INSTANCE_COUNT */
     mbpf_exception_default_fn exception_default_fn; /* Optional per-hook default */
+    /* Circuit breaker configuration (optional, 0 = disabled) */
+    uint32_t circuit_breaker_threshold;   /* Consecutive failures before tripping (0 = disabled) */
+    uint32_t circuit_breaker_cooldown_us; /* Cooldown period in microseconds before retry */
 } mbpf_runtime_config_t;
 
 /* Load options */
@@ -175,6 +178,8 @@ typedef struct mbpf_stats {
     uint64_t oom_errors;
     uint64_t budget_exceeded;
     uint64_t nested_dropped;
+    uint64_t circuit_breaker_trips;   /* Times circuit breaker was tripped */
+    uint64_t circuit_breaker_skipped; /* Invocations skipped due to open circuit */
 } mbpf_stats_t;
 
 /* Context flags */
@@ -387,6 +392,17 @@ int mbpf_emit_count(mbpf_program_t *prog);
 /* Get the number of events that have been dropped due to overflow.
  * Returns -1 on error. */
 int mbpf_emit_dropped(mbpf_program_t *prog);
+
+/* Circuit breaker API */
+
+/* Check if a program's circuit breaker is currently open (disabled).
+ * Returns true if the program is temporarily disabled, false otherwise.
+ * Always returns false if circuit breaker is not configured. */
+bool mbpf_program_circuit_open(mbpf_program_t *prog);
+
+/* Manually reset a program's circuit breaker, closing the circuit
+ * and allowing the program to run again. Returns MBPF_OK on success. */
+int mbpf_program_circuit_reset(mbpf_program_t *prog);
 
 #ifdef __cplusplus
 }

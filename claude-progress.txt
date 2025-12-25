@@ -85,3 +85,4 @@ budget-max-wall-time: reviewed and fixed wall time elapsed calculation
 2025-12-25 capability-categories: reviewed capability category gating and tests.
 2025-12-25 nested-execution-prevention: reviewed nested execution guard, safe default propagation, and tests.
 2025-12-25 failure-isolation: reviewed failure isolation tests and integration.
+2025-12-25 circuit-breaker: reviewed optional circuit breaker and tests.
