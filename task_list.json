@@ -613,7 +613,7 @@
       "Call mbpf.mapUpdate(mapId, keyBytes, valueBytes, flags) - verify works",
       "Call mbpf.mapDelete(mapId, keyBytes) - verify works"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "budget-max-steps",

@@ -1600,6 +1600,374 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
 }
 
 /*
+ * Set up low-level map helper functions on the mbpf object.
+ * Provides mbpf.mapLookup, mbpf.mapUpdate, mbpf.mapDelete as alternatives
+ * to the maps object, allowing access by numeric map ID instead of name.
+ *
+ * Must be called after setup_maps_object since it relies on _mapData and _mapValid.
+ */
+static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
+    if (!prog->maps || prog->map_count == 0) {
+        return 0;  /* No maps, no helpers needed */
+    }
+
+    /* Estimate code size: ~8KB base for helper code + ~256 bytes per map for metadata */
+    size_t code_size = 12288 + prog->map_count * 256;
+    char *code = malloc(code_size);
+    if (!code) return -1;
+
+    char *p = code;
+    size_t remaining = code_size;
+    int written;
+
+    /* Create _mapMeta array with metadata for each map.
+     * Each entry: {type, keySize, valueSize, maxEntries, bucketSize}
+     * - type: 1=array, 2=hash, 3=lru, 5=ring, 6=counter, 7=percpu_array, 8=percpu_hash
+     * - keySize: for hash/lru, 0 for array
+     * - valueSize: size of value in bytes
+     * - maxEntries: maximum number of entries
+     * - bucketSize: for hash/lru, total size of one bucket entry */
+    written = snprintf(p, remaining,
+        "(function(){"
+        "globalThis._mapMeta=[");
+    p += written;
+    remaining -= written;
+
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+        uint32_t type = storage->type;
+        uint32_t key_size = 0;
+        uint32_t value_size = 0;
+        uint32_t max_entries = 0;
+        uint32_t bucket_size = 0;
+
+        switch (storage->type) {
+            case MBPF_MAP_TYPE_ARRAY:
+                value_size = storage->u.array.value_size;
+                max_entries = storage->u.array.max_entries;
+                break;
+            case MBPF_MAP_TYPE_HASH:
+                key_size = storage->u.hash.key_size;
+                value_size = storage->u.hash.value_size;
+                max_entries = storage->u.hash.max_entries;
+                bucket_size = 1 + key_size + value_size;
+                break;
+            case MBPF_MAP_TYPE_LRU:
+                key_size = storage->u.lru_hash.key_size;
+                value_size = storage->u.lru_hash.value_size;
+                max_entries = storage->u.lru_hash.max_entries;
+                bucket_size = 1 + 4 + 4 + key_size + value_size;  /* valid + prev + next + key + value */
+                break;
+            case MBPF_MAP_TYPE_PERCPU_ARRAY:
+                value_size = storage->u.percpu_array.value_size;
+                max_entries = storage->u.percpu_array.max_entries;
+                break;
+            case MBPF_MAP_TYPE_PERCPU_HASH:
+                key_size = storage->u.percpu_hash.key_size;
+                value_size = storage->u.percpu_hash.value_size;
+                max_entries = storage->u.percpu_hash.max_entries;
+                bucket_size = 1 + key_size + value_size;
+                break;
+            default:
+                /* Ring buffer and counter maps don't support standard lookup/update/delete */
+                break;
+        }
+
+        written = snprintf(p, remaining, "%s{t:%u,kS:%u,vS:%u,mE:%u,bS:%u}",
+            i > 0 ? "," : "", type, key_size, value_size, max_entries, bucket_size);
+        p += written;
+        remaining -= written;
+    }
+
+    /* Close _mapMeta array and add helper functions to mbpf object */
+    written = snprintf(p, remaining,
+        "];"
+        /* FNV-1a hash function for Uint8Array keys */
+        "function _fnv(k,kS){"
+            "var h=2166136261>>>0;"
+            "for(var i=0;i<kS;i++){h^=k[i];h=Math.imul(h,16777619)>>>0;}"
+            "return h;"
+        "}"
+        /* Compare key in bucket data with key buffer */
+        "function _keq(d,off,k,kS){"
+            "for(var i=0;i<kS;i++)if(d[off+i]!==k[i])return false;"
+            "return true;"
+        "}"
+        /* LRU helper: read 32-bit LE uint at offset */
+        "function _r32(d,off){"
+            "return (d[off]|(d[off+1]<<8)|(d[off+2]<<16)|(d[off+3]<<24))>>>0;"
+        "}"
+        /* LRU helper: write 32-bit LE uint at offset */
+        "function _w32(d,off,val){"
+            "d[off]=val&0xFF;"
+            "d[off+1]=(val>>8)&0xFF;"
+            "d[off+2]=(val>>16)&0xFF;"
+            "d[off+3]=(val>>24)&0xFF;"
+        "}"
+        /* LRU helper: get prev index at bucket offset */
+        "function _gP(d,off){return _r32(d,off+1);}"
+        /* LRU helper: get next index at bucket offset */
+        "function _gN(d,off){return _r32(d,off+5);}"
+        /* LRU helper: set prev index at bucket offset */
+        "function _sP(d,off,val){_w32(d,off+1,val);}"
+        /* LRU helper: set next index at bucket offset */
+        "function _sN(d,off,val){_w32(d,off+5,val);}"
+        /* LRU helper: remove entry at bucket index from LRU list */
+        "function _lruRemove(d,v,idx,bS){"
+            "var NULL_IDX=0xFFFFFFFF;"
+            "var off=idx*bS;"
+            "var pr=_gP(d,off);"
+            "var nx=_gN(d,off);"
+            "if(pr!==NULL_IDX){_sN(d,pr*bS,nx);}else{v.head=nx;}"
+            "if(nx!==NULL_IDX){_sP(d,nx*bS,pr);}else{v.tail=pr;}"
+        "}"
+        /* LRU helper: add entry at bucket index to head of LRU list */
+        "function _lruAddHead(d,v,idx,bS){"
+            "var NULL_IDX=0xFFFFFFFF;"
+            "var off=idx*bS;"
+            "_sP(d,off,NULL_IDX);"
+            "_sN(d,off,v.head);"
+            "if(v.head!==NULL_IDX){_sP(d,v.head*bS,idx);}"
+            "v.head=idx;"
+            "if(v.tail===NULL_IDX){v.tail=idx;}"
+        "}"
+        /* LRU helper: move entry at bucket index to head (refresh LRU) */
+        "function _lruTouch(d,v,idx,bS){"
+            "if(v.head===idx)return;"
+            "_lruRemove(d,v,idx,bS);"
+            "_lruAddHead(d,v,idx,bS);"
+        "}"
+        /* LRU helper: evict tail (LRU) entry, returns bucket index */
+        "function _lruEvictTail(d,v,bS){"
+            "var NULL_IDX=0xFFFFFFFF;"
+            "var idx=v.tail;"
+            "if(idx===NULL_IDX)return NULL_IDX;"
+            "_lruRemove(d,v,idx,bS);"
+            "var off=idx*bS;"
+            "d[off]=2;"  /* Mark as tombstone */
+            "v.count--;"
+            "return idx;"
+        "}"
+        /* mapLookup(mapId, keyBytes, outValueBytes)
+         * For array maps: keyBytes is ignored, use first element as index
+         * For hash/lru maps: keyBytes is the key to look up */
+        "mbpf.mapLookup=function(mapId,keyBytes,outValue){"
+            "if(typeof mapId!=='number')throw new TypeError('mapId must be a number');"
+            "if(mapId<0||mapId>=_mapMeta.length)throw new RangeError('mapId out of range');"
+            "var m=_mapMeta[mapId],d=_mapData[mapId],v=_mapValid[mapId];"
+            "if(!(outValue instanceof Uint8Array))throw new TypeError('outValue must be Uint8Array');"
+            "if(outValue.length<m.vS)throw new RangeError('outValue too small');"
+            /* Array map (type 1 or 7) */
+            "if(m.t===1||m.t===7){"
+                "if(typeof keyBytes!=='number')throw new TypeError('array map requires numeric index');"
+                "var idx=keyBytes;"
+                "if(idx<0||idx>=m.mE)throw new RangeError('index out of bounds');"
+                "if(!v[idx])return false;"
+                "var off=idx*m.vS;"
+                "for(var i=0;i<m.vS;i++)outValue[i]=d[off+i];"
+                "return true;"
+            "}"
+            /* Hash map (type 2 or 8) */
+            "if(m.t===2||m.t===8){"
+                "if(!(keyBytes instanceof Uint8Array))throw new TypeError('hash map requires Uint8Array key');"
+                "if(keyBytes.length<m.kS)throw new RangeError('key too small');"
+                "var h=_fnv(keyBytes,m.kS)%%m.mE;"
+                "for(var i=0;i<m.mE;i++){"
+                    "var idx=(h+i)%%m.mE,off=idx*m.bS;"
+                    "if(d[off]===0)return false;"
+                    "if(d[off]===1&&_keq(d,off+1,keyBytes,m.kS)){"
+                        "for(var j=0;j<m.vS;j++)outValue[j]=d[off+1+m.kS+j];"
+                        "return true;"
+                    "}"
+                "}"
+                "return false;"
+            "}"
+            /* LRU hash map (type 3) - lookup also refreshes LRU */
+            "if(m.t===3){"
+                "if(!(keyBytes instanceof Uint8Array))throw new TypeError('lru map requires Uint8Array key');"
+                "if(keyBytes.length<m.kS)throw new RangeError('key too small');"
+                "var h=_fnv(keyBytes,m.kS)%%m.mE;"
+                "for(var i=0;i<m.mE;i++){"
+                    "var idx=(h+i)%%m.mE,off=idx*m.bS;"
+                    "if(d[off]===0)return false;"
+                    "if(d[off]===1&&_keq(d,off+9,keyBytes,m.kS)){"
+                        "for(var j=0;j<m.vS;j++)outValue[j]=d[off+9+m.kS+j];"
+                        "_lruTouch(d,v,idx,m.bS);"  /* Move to head (most recently used) */
+                        "return true;"
+                    "}"
+                "}"
+                "return false;"
+            "}"
+            "throw new Error('unsupported map type for mapLookup');"
+        "};"
+        /* mapUpdate(mapId, keyBytes, valueBytes, flags)
+         * flags: 0=create or update, 1=create only, 2=update only */
+        "mbpf.mapUpdate=function(mapId,keyBytes,valueBytes,flags){"
+            "if(typeof mapId!=='number')throw new TypeError('mapId must be a number');"
+            "if(mapId<0||mapId>=_mapMeta.length)throw new RangeError('mapId out of range');"
+            "flags=flags||0;"
+            "var m=_mapMeta[mapId],d=_mapData[mapId],v=_mapValid[mapId];"
+            "if(!(valueBytes instanceof Uint8Array))throw new TypeError('valueBytes must be Uint8Array');"
+            "if(valueBytes.length<m.vS)throw new RangeError('valueBytes too small');"
+            /* Array map (type 1 or 7) */
+            "if(m.t===1||m.t===7){"
+                "if(typeof keyBytes!=='number')throw new TypeError('array map requires numeric index');"
+                "var idx=keyBytes;"
+                "if(idx<0||idx>=m.mE)throw new RangeError('index out of bounds');"
+                "if(flags===1&&v[idx])return false;"  /* Create only but exists */
+                "if(flags===2&&!v[idx])return false;"  /* Update only but doesn't exist */
+                "var off=idx*m.vS;"
+                "for(var i=0;i<m.vS;i++)d[off+i]=valueBytes[i];"
+                "v[idx]=1;"
+                "return true;"
+            "}"
+            /* Hash map (type 2 or 8) */
+            "if(m.t===2||m.t===8){"
+                "if(!(keyBytes instanceof Uint8Array))throw new TypeError('hash map requires Uint8Array key');"
+                "if(keyBytes.length<m.kS)throw new RangeError('key too small');"
+                "var h=_fnv(keyBytes,m.kS)%%m.mE,firstDel=-1;"
+                "for(var i=0;i<m.mE;i++){"
+                    "var idx=(h+i)%%m.mE,off=idx*m.bS;"
+                    "if(d[off]===0){"  /* Empty slot */
+                        "if(flags===2)return false;"  /* Update only */
+                        "if(firstDel>=0)off=firstDel;"
+                        "d[off]=1;"
+                        "for(var j=0;j<m.kS;j++)d[off+1+j]=keyBytes[j];"
+                        "for(var j=0;j<m.vS;j++)d[off+1+m.kS+j]=valueBytes[j];"
+                        "v.count++;"
+                        "return true;"
+                    "}"
+                    "if(d[off]===2&&firstDel<0)firstDel=off;"
+                    "if(d[off]===1&&_keq(d,off+1,keyBytes,m.kS)){"
+                        "if(flags===1)return false;"  /* Create only but exists */
+                        "for(var j=0;j<m.vS;j++)d[off+1+m.kS+j]=valueBytes[j];"
+                        "return true;"
+                    "}"
+                "}"
+                "if(firstDel>=0&&flags!==2){"
+                    "d[firstDel]=1;"
+                    "for(var j=0;j<m.kS;j++)d[firstDel+1+j]=keyBytes[j];"
+                    "for(var j=0;j<m.vS;j++)d[firstDel+1+m.kS+j]=valueBytes[j];"
+                    "v.count++;"
+                    "return true;"
+                "}"
+                "return false;"
+            "}"
+            /* LRU hash map (type 3) - full LRU list maintenance with eviction */
+            "if(m.t===3){"
+                "if(!(keyBytes instanceof Uint8Array))throw new TypeError('lru map requires Uint8Array key');"
+                "if(keyBytes.length<m.kS)throw new RangeError('key too small');"
+                "var h=_fnv(keyBytes,m.kS)%%m.mE,firstDel=-1;"
+                "for(var i=0;i<m.mE;i++){"
+                    "var idx=(h+i)%%m.mE,off=idx*m.bS;"
+                    "if(d[off]===0){"  /* Empty slot - insert here */
+                        "if(flags===2)return false;"  /* Update only */
+                        "if(firstDel>=0){off=firstDel;idx=Math.floor(firstDel/m.bS);}"
+                        "d[off]=1;"
+                        "for(var j=0;j<m.kS;j++)d[off+9+j]=keyBytes[j];"
+                        "for(var j=0;j<m.vS;j++)d[off+9+m.kS+j]=valueBytes[j];"
+                        "v.count++;"
+                        "_lruAddHead(d,v,idx,m.bS);"
+                        "return true;"
+                    "}"
+                    "if(d[off]===2&&firstDel<0)firstDel=off;"
+                    "if(d[off]===1&&_keq(d,off+9,keyBytes,m.kS)){"  /* Existing key - update */
+                        "if(flags===1)return false;"  /* Create only but exists */
+                        "for(var j=0;j<m.vS;j++)d[off+9+m.kS+j]=valueBytes[j];"
+                        "_lruTouch(d,v,idx,m.bS);"  /* Move to head */
+                        "return true;"
+                    "}"
+                "}"
+                /* Searched all slots. Use firstDel if found */
+                "if(firstDel>=0&&flags!==2){"
+                    "var idx=Math.floor(firstDel/m.bS);"
+                    "d[firstDel]=1;"
+                    "for(var j=0;j<m.kS;j++)d[firstDel+9+j]=keyBytes[j];"
+                    "for(var j=0;j<m.vS;j++)d[firstDel+9+m.kS+j]=valueBytes[j];"
+                    "v.count++;"
+                    "_lruAddHead(d,v,idx,m.bS);"
+                    "return true;"
+                "}"
+                /* Table full with no empty/deleted slots: evict LRU and reuse */
+                "if(flags===2)return false;"  /* Update only - can't evict */
+                "var evicted=_lruEvictTail(d,v,m.bS);"
+                "if(evicted===0xFFFFFFFF)return false;"
+                "var off=evicted*m.bS;"
+                "d[off]=1;"
+                "for(var j=0;j<m.kS;j++)d[off+9+j]=keyBytes[j];"
+                "for(var j=0;j<m.vS;j++)d[off+9+m.kS+j]=valueBytes[j];"
+                "v.count++;"
+                "_lruAddHead(d,v,evicted,m.bS);"
+                "return true;"
+            "}"
+            "throw new Error('unsupported map type for mapUpdate');"
+        "};"
+        /* mapDelete(mapId, keyBytes)
+         * For array maps: keyBytes is numeric index
+         * For hash/lru maps: keyBytes is the key to delete */
+        "mbpf.mapDelete=function(mapId,keyBytes){"
+            "if(typeof mapId!=='number')throw new TypeError('mapId must be a number');"
+            "if(mapId<0||mapId>=_mapMeta.length)throw new RangeError('mapId out of range');"
+            "var m=_mapMeta[mapId],d=_mapData[mapId],v=_mapValid[mapId];"
+            /* Array map (type 1 or 7) */
+            "if(m.t===1||m.t===7){"
+                "if(typeof keyBytes!=='number')throw new TypeError('array map requires numeric index');"
+                "var idx=keyBytes;"
+                "if(idx<0||idx>=m.mE)throw new RangeError('index out of bounds');"
+                "if(!v[idx])return false;"
+                "v[idx]=0;"
+                "return true;"
+            "}"
+            /* Hash map (type 2 or 8) */
+            "if(m.t===2||m.t===8){"
+                "if(!(keyBytes instanceof Uint8Array))throw new TypeError('hash map requires Uint8Array key');"
+                "if(keyBytes.length<m.kS)throw new RangeError('key too small');"
+                "var h=_fnv(keyBytes,m.kS)%%m.mE;"
+                "for(var i=0;i<m.mE;i++){"
+                    "var idx=(h+i)%%m.mE,off=idx*m.bS;"
+                    "if(d[off]===0)return false;"
+                    "if(d[off]===1&&_keq(d,off+1,keyBytes,m.kS)){"
+                        "d[off]=2;"  /* Mark as tombstone */
+                        "v.count--;"
+                        "return true;"
+                    "}"
+                "}"
+                "return false;"
+            "}"
+            /* LRU hash map (type 3) - remove from LRU list before marking tombstone */
+            "if(m.t===3){"
+                "if(!(keyBytes instanceof Uint8Array))throw new TypeError('lru map requires Uint8Array key');"
+                "if(keyBytes.length<m.kS)throw new RangeError('key too small');"
+                "var h=_fnv(keyBytes,m.kS)%%m.mE;"
+                "for(var i=0;i<m.mE;i++){"
+                    "var idx=(h+i)%%m.mE,off=idx*m.bS;"
+                    "if(d[off]===0)return false;"
+                    "if(d[off]===1&&_keq(d,off+9,keyBytes,m.kS)){"
+                        "_lruRemove(d,v,idx,m.bS);"  /* Remove from LRU list */
+                        "d[off]=2;"  /* Mark as tombstone */
+                        "v.count--;"
+                        "return true;"
+                    "}"
+                "}"
+                "return false;"
+            "}"
+            "throw new Error('unsupported map type for mapDelete');"
+        "};"
+        "})()");
+    p += written;
+
+    JSValue result = JS_Eval(ctx, code, strlen(code), "<map_helpers>", JS_EVAL_RETVAL);
+    free(code);
+
+    if (JS_IsException(result)) {
+        JS_GetException(ctx);
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
  * Get the exception default for a hook type, using the runtime's custom
  * callback if configured, otherwise falling back to built-in defaults.
  */
@@ -2416,7 +2784,8 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
         if (setup_mbpf_object(prog->instances[i].js_ctx, prog->manifest.capabilities) != 0 ||
-            setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
+            setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0 ||
+            setup_lowlevel_map_helpers(prog->instances[i].js_ctx, prog) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
             }
@@ -3327,7 +3696,8 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
     /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
         if (setup_mbpf_object(prog->instances[i].js_ctx, prog->manifest.capabilities) != 0 ||
-            setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
+            setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0 ||
+            setup_lowlevel_map_helpers(prog->instances[i].js_ctx, prog) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
             }
