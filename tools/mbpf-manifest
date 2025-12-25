@@ -1,0 +1,254 @@
+#!/bin/bash
+# mbpf-manifest - Generate manifest section for microBPF packages
+#
+# Usage: mbpf-manifest [options] -o output.manifest
+#
+# Required options:
+#   -n NAME          Program name
+#   -v VERSION       Program version (e.g., "1.0.0")
+#   --hook TYPE      Hook type: tracepoint, timer, net_rx, net_tx, security, custom
+#   -o FILE          Output file (manifest section in CBOR format)
+#
+# Optional options:
+#   --entry SYMBOL   Entry function name (default: "mbpf_prog")
+#   --heap SIZE      Heap size in bytes (default: 8192)
+#   --max-steps N    Maximum execution steps (default: 10000)
+#   --max-helpers N  Maximum helper calls (default: 100)
+#   --max-time-us N  Maximum wall time in microseconds (default: 0 = disabled)
+#   --caps CAP,...   Comma-separated capabilities (CAP_LOG, CAP_MAP_READ, etc.)
+#   --word-size N    Target word size: 32 or 64 (default: host)
+#   --endianness E   Target endianness: little or big (default: little)
+#   --json           Output JSON instead of CBOR
+#   -h, --help       Show this help message
+#
+# Examples:
+#   mbpf-manifest -n my_filter -v 1.0.0 --hook net_rx -o manifest.cbor
+#   mbpf-manifest -n timer_prog -v 2.0 --hook timer --caps CAP_LOG,CAP_TIME -o m.cbor
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+GENERATOR="$PROJECT_ROOT/build/mbpf_manifest_gen"
+
+usage() {
+    echo "Usage: mbpf-manifest [options] -o output.manifest"
+    echo ""
+    echo "Generate a manifest section for microBPF packages."
+    echo ""
+    echo "Required options:"
+    echo "  -n NAME          Program name"
+    echo "  -v VERSION       Program version (e.g., \"1.0.0\")"
+    echo "  --hook TYPE      Hook type: tracepoint, timer, net_rx, net_tx, security, custom"
+    echo "  -o FILE          Output file (manifest section)"
+    echo ""
+    echo "Optional options:"
+    echo "  --entry SYMBOL   Entry function name (default: \"mbpf_prog\")"
+    echo "  --heap SIZE      Heap size in bytes (default: 8192)"
+    echo "  --max-steps N    Maximum execution steps (default: 10000)"
+    echo "  --max-helpers N  Maximum helper calls (default: 100)"
+    echo "  --max-time-us N  Maximum wall time in microseconds (default: 0 = disabled)"
+    echo "  --caps CAP,...   Comma-separated capabilities"
+    echo "  --word-size N    Target word size: 32 or 64 (default: host)"
+    echo "  --endianness E   Target endianness: little or big (default: little)"
+    echo "  --json           Output JSON instead of CBOR"
+    echo "  -h, --help       Show this help message"
+    echo ""
+    echo "Capabilities: CAP_LOG, CAP_MAP_READ, CAP_MAP_WRITE, CAP_MAP_ITERATE,"
+    echo "              CAP_EMIT, CAP_TIME, CAP_STATS"
+    echo ""
+    echo "Examples:"
+    echo "  mbpf-manifest -n my_filter -v 1.0.0 --hook net_rx -o manifest.cbor"
+    echo "  mbpf-manifest -n timer_prog -v 2.0 --hook timer --caps CAP_LOG,CAP_TIME -o m.cbor"
+    exit "${1:-0}"
+}
+
+# Check if generator exists
+if [ ! -x "$GENERATOR" ]; then
+    echo "Error: manifest generator not found at $GENERATOR" >&2
+    echo "Run 'make' to build the microBPF tools first." >&2
+    exit 1
+fi
+
+# Default values
+PROGRAM_NAME=""
+PROGRAM_VERSION=""
+HOOK_TYPE=""
+OUTPUT_FILE=""
+ENTRY_SYMBOL="mbpf_prog"
+HEAP_SIZE=8192
+MAX_STEPS=10000
+MAX_HELPERS=100
+MAX_WALL_TIME_US=0
+CAPABILITIES=""
+WORD_SIZE=""
+ENDIANNESS="little"
+FORMAT="cbor"
+
+# Parse arguments
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage 0
+            ;;
+        -n)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -n requires a program name" >&2
+                exit 1
+            fi
+            PROGRAM_NAME="$1"
+            shift
+            ;;
+        -v)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -v requires a program version" >&2
+                exit 1
+            fi
+            PROGRAM_VERSION="$1"
+            shift
+            ;;
+        --hook)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --hook requires a hook type" >&2
+                exit 1
+            fi
+            HOOK_TYPE="$1"
+            shift
+            ;;
+        -o)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -o requires an output file" >&2
+                exit 1
+            fi
+            OUTPUT_FILE="$1"
+            shift
+            ;;
+        --entry)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --entry requires a symbol name" >&2
+                exit 1
+            fi
+            ENTRY_SYMBOL="$1"
+            shift
+            ;;
+        --heap)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --heap requires a size" >&2
+                exit 1
+            fi
+            HEAP_SIZE="$1"
+            shift
+            ;;
+        --max-steps)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --max-steps requires a value" >&2
+                exit 1
+            fi
+            MAX_STEPS="$1"
+            shift
+            ;;
+        --max-helpers)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --max-helpers requires a value" >&2
+                exit 1
+            fi
+            MAX_HELPERS="$1"
+            shift
+            ;;
+        --max-time-us)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --max-time-us requires a value" >&2
+                exit 1
+            fi
+            MAX_WALL_TIME_US="$1"
+            shift
+            ;;
+        --caps)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --caps requires capability list" >&2
+                exit 1
+            fi
+            CAPABILITIES="$1"
+            shift
+            ;;
+        --word-size)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --word-size requires 32 or 64" >&2
+                exit 1
+            fi
+            WORD_SIZE="$1"
+            shift
+            ;;
+        --endianness)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: --endianness requires little or big" >&2
+                exit 1
+            fi
+            ENDIANNESS="$1"
+            shift
+            ;;
+        --json)
+            FORMAT="json"
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            usage 1
+            ;;
+        *)
+            echo "Error: Unexpected argument: $1" >&2
+            usage 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$PROGRAM_NAME" ]; then
+    echo "Error: Program name required (-n)" >&2
+    usage 1
+fi
+
+if [ -z "$PROGRAM_VERSION" ]; then
+    echo "Error: Program version required (-v)" >&2
+    usage 1
+fi
+
+if [ -z "$HOOK_TYPE" ]; then
+    echo "Error: Hook type required (--hook)" >&2
+    usage 1
+fi
+
+if [ -z "$OUTPUT_FILE" ]; then
+    echo "Error: Output file required (-o)" >&2
+    usage 1
+fi
+
+# Call the C generator tool
+"$GENERATOR" \
+    --name "$PROGRAM_NAME" \
+    --version "$PROGRAM_VERSION" \
+    --hook "$HOOK_TYPE" \
+    --entry "$ENTRY_SYMBOL" \
+    --heap "$HEAP_SIZE" \
+    --max-steps "$MAX_STEPS" \
+    --max-helpers "$MAX_HELPERS" \
+    --max-time-us "$MAX_WALL_TIME_US" \
+    ${CAPABILITIES:+--caps "$CAPABILITIES"} \
+    ${WORD_SIZE:+--word-size "$WORD_SIZE"} \
+    --endianness "$ENDIANNESS" \
+    --format "$FORMAT" \
+    -o "$OUTPUT_FILE"
+
+echo "Generated: $OUTPUT_FILE (format: $FORMAT)"

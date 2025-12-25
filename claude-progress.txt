@@ -99,3 +99,4 @@ budget-max-wall-time: reviewed and fixed wall time elapsed calculation
 2025-12-25 global-console-debug: reviewed console.log debug gating and tests.
 disallowed-globals: disabled Function/eval globals and added security tests.
 2025-12-25 toolchain-js-compile: reviewed toolchain JS compile fixes.
+2025-12-25 toolchain-manifest-gen: reviewed manifest generation APIs, tests, and tooling.

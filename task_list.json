@@ -918,7 +918,7 @@
       "Include all required fields per spec",
       "Generate binary manifest section"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "toolchain-mbpf-assemble",

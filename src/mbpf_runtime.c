@@ -2882,7 +2882,6 @@ static int validate_entry_function(JSContext *ctx, const char *entry_symbol) {
 static void disable_dangerous_globals(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     if (JS_IsUndefined(global) || JS_IsException(global)) {
-        JS_FreeValue(ctx, global);
         return;
     }
 
@@ -2894,9 +2893,9 @@ static void disable_dangerous_globals(JSContext *ctx) {
         if (!JS_IsUndefined(function_proto) && !JS_IsException(function_proto)) {
             JS_SetPropertyStr(ctx, function_proto, "constructor", JS_UNDEFINED);
         }
-        JS_FreeValue(ctx, function_proto);
+        /* Note: MQuickJS uses a compacting GC, temporary values don't need
+         * explicit freeing - they're garbage collected automatically. */
     }
-    JS_FreeValue(ctx, function_ctor);
 
     /* Disable Function constructor by setting it to undefined.
      * This prevents code like: new Function('return 1')()
@@ -2915,7 +2914,6 @@ static void disable_dangerous_globals(JSContext *ctx) {
      * - WebSocket (no network APIs)
      * These would need explicit stub functions if we wanted to throw
      * informative errors, but they simply don't exist. */
-    JS_FreeValue(ctx, global);
 }
 
 /*
