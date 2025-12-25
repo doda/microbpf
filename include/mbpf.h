@@ -347,6 +347,36 @@ int mbpf_ring_count(mbpf_program_t *prog, int map_idx);
  * Returns -1 on error. */
 int mbpf_ring_dropped(mbpf_program_t *prog, int map_idx);
 
+/* Emit event buffer access (host-side API for mbpf.emit events)
+ *
+ * Programs with CAP_EMIT can use mbpf.emit(eventId, bytes) to emit events.
+ * Events are stored in a per-program ring buffer with format:
+ *   [4 bytes: eventId][4 bytes: data_len][data: variable length]
+ * The host can read events using these APIs after mbpf_run() returns.
+ */
+
+/* Read the next emitted event from the program's emit buffer.
+ * Returns the event data length on success (excludes eventId header),
+ * 0 if buffer is empty, or -1 on error.
+ * Event data is copied to out_data (up to max_len bytes).
+ * If out_event_id is not NULL, the event ID is written there.
+ * If the data is larger than max_len, it is truncated but still consumed. */
+int mbpf_emit_read(mbpf_program_t *prog, uint32_t *out_event_id,
+                   void *out_data, size_t max_len);
+
+/* Peek at the next emitted event without consuming it.
+ * Same return semantics as mbpf_emit_read. */
+int mbpf_emit_peek(mbpf_program_t *prog, uint32_t *out_event_id,
+                   void *out_data, size_t max_len);
+
+/* Get the number of events currently in the emit buffer.
+ * Returns -1 on error. */
+int mbpf_emit_count(mbpf_program_t *prog);
+
+/* Get the number of events that have been dropped due to overflow.
+ * Returns -1 on error. */
+int mbpf_emit_dropped(mbpf_program_t *prog);
+
 #ifdef __cplusplus
 }
 #endif

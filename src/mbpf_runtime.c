@@ -117,6 +117,22 @@ typedef struct mbpf_ring_buffer_map {
 } mbpf_ring_buffer_map_t;
 
 /*
+ * Emit event buffer for mbpf.emit() helper.
+ * Uses a circular buffer with head/tail pointers.
+ * Each event is stored as: [eventId:4][length:4][data:length] (variable length records).
+ * When buffer is full, oldest events are dropped to make room for new ones.
+ */
+typedef struct mbpf_emit_buffer {
+    uint32_t buffer_size;       /* Total buffer size in bytes (default 4KB) */
+    uint32_t max_event_size;    /* Maximum event data size (default 256 bytes) */
+    uint32_t head;              /* Write position (next write offset) */
+    uint32_t tail;              /* Read position (next read offset) */
+    uint32_t dropped;           /* Count of dropped events due to overflow */
+    uint32_t event_count;       /* Number of events currently in buffer */
+    uint8_t *buffer;            /* Circular buffer storage */
+} mbpf_emit_buffer_t;
+
+/*
  * Counter map storage for atomic 64-bit counters.
  * Provides atomic add/get operations on an array of 64-bit counters.
  * Optimized for counting use cases (stats, metrics, etc.).
@@ -185,6 +201,10 @@ struct mbpf_program {
     /* Map storage - shared across all instances */
     mbpf_map_storage_t *maps;
     uint32_t map_count;
+
+    /* Emit event buffer for mbpf.emit() - shared across all instances */
+    mbpf_emit_buffer_t *emit_buffer;
+    bool has_emit_cap;          /* Whether program has CAP_EMIT */
 };
 
 /* Default log handler */
@@ -481,6 +501,57 @@ static void free_maps(mbpf_program_t *prog) {
     prog->map_count = 0;
 }
 
+/* Default emit buffer size (4KB) and max event size (256 bytes) */
+#define MBPF_EMIT_BUFFER_SIZE 4096
+#define MBPF_EMIT_MAX_EVENT_SIZE 256
+
+/*
+ * Create emit buffer for programs with CAP_EMIT capability.
+ * Returns 0 on success, -1 on error.
+ */
+static int create_emit_buffer(mbpf_program_t *prog) {
+    /* Check if CAP_EMIT is granted */
+    if (!(prog->manifest.capabilities & MBPF_CAP_EMIT)) {
+        prog->emit_buffer = NULL;
+        prog->has_emit_cap = false;
+        return 0;
+    }
+
+    prog->has_emit_cap = true;
+    prog->emit_buffer = calloc(1, sizeof(mbpf_emit_buffer_t));
+    if (!prog->emit_buffer) {
+        return -1;
+    }
+
+    prog->emit_buffer->buffer_size = MBPF_EMIT_BUFFER_SIZE;
+    prog->emit_buffer->max_event_size = MBPF_EMIT_MAX_EVENT_SIZE;
+    prog->emit_buffer->head = 0;
+    prog->emit_buffer->tail = 0;
+    prog->emit_buffer->dropped = 0;
+    prog->emit_buffer->event_count = 0;
+
+    prog->emit_buffer->buffer = calloc(1, MBPF_EMIT_BUFFER_SIZE);
+    if (!prog->emit_buffer->buffer) {
+        free(prog->emit_buffer);
+        prog->emit_buffer = NULL;
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * Free emit buffer.
+ */
+static void free_emit_buffer(mbpf_program_t *prog) {
+    if (prog->emit_buffer) {
+        free(prog->emit_buffer->buffer);
+        free(prog->emit_buffer);
+        prog->emit_buffer = NULL;
+    }
+    prog->has_emit_cap = false;
+}
+
 /*
  * Create the 'mbpf' global object for a JS context.
  * This object provides helper functions and properties:
@@ -488,25 +559,29 @@ static void free_maps(mbpf_program_t *prog) {
  * - log(level, msg): Logging helper that maps to runtime log callback
  * - u64LoadLE/u64StoreLE: 64-bit value helpers
  * - nowNs(out): Monotonic time in nanoseconds (requires CAP_TIME)
+ * - emit(eventId, bytes): Emit an event to the event buffer (requires CAP_EMIT)
  *
  * Log levels: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
  * The log function uses console.log internally but adds level prefix.
  */
 static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
     /* Build JS code to create mbpf object with apiVersion, log, u64 helpers,
-     * and optionally nowNs if CAP_TIME is granted.
+     * and optionally nowNs if CAP_TIME is granted, emit if CAP_EMIT is granted.
      * The log function prepends the level prefix and calls console.log,
      * which maps to js_print in mbpf_stdlib.c where the actual logging happens.
      * u64LoadLE/u64StoreLE handle 64-bit values as [lo, hi] pairs in LE format.
-     * nowNs reads from _mbpf_time_ns which is updated by the runtime before each run. */
-    char code[3072];
+     * nowNs reads from _mbpf_time_ns which is updated by the runtime before each run.
+     * emit writes events to _mbpf_emit_buf which is synced to C after each run. */
+    char code[4096];
     uint32_t api_version = MBPF_API_VERSION;
     int has_cap_time = (capabilities & MBPF_CAP_TIME) != 0;
+    int has_cap_emit = (capabilities & MBPF_CAP_EMIT) != 0;
 
     snprintf(code, sizeof(code),
         "(function(){"
         "var levelNames=['DEBUG','INFO','WARN','ERROR'];"
         "%s"  /* CAP_TIME: create _mbpf_time_ns array */
+        "%s"  /* CAP_EMIT: create _mbpf_emit_* state */
         "globalThis.mbpf={"
         "apiVersion:%u,"
         "log:function(level,msg){"
@@ -535,16 +610,61 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
             "bytes[offset+2]=(lo>>16)&0xFF;bytes[offset+3]=(lo>>24)&0xFF;"
             "bytes[offset+4]=hi&0xFF;bytes[offset+5]=(hi>>8)&0xFF;"
             "bytes[offset+6]=(hi>>16)&0xFF;bytes[offset+7]=(hi>>24)&0xFF;"
-        "}%s"
+        "}%s%s"
         "};"
         "})()",
         has_cap_time ? "globalThis._mbpf_time_ns=[0,0];" : "",
+        has_cap_emit ?
+            /* Create emit buffer state:
+             * _mbpf_emit_buf: Uint8Array holding the event data
+             * _mbpf_emit_meta: {head, tail, dropped, eventCount, bufSize, maxEventSize}
+             * Format in buffer: [eventId:4][dataLen:4][data:dataLen] per event */
+            "globalThis._mbpf_emit_buf=new Uint8Array(4096);"
+            "globalThis._mbpf_emit_meta={head:0,tail:0,dropped:0,eventCount:0,bufSize:4096,maxEventSize:256};"
+            : "",
         api_version,
         has_cap_time ?
             ","
             "nowNs:function(out){"
                 "if(!Array.isArray(out)||out.length<2)throw new TypeError('out must be array of length 2');"
                 "out[0]=_mbpf_time_ns[0];out[1]=_mbpf_time_ns[1];"
+            "}"
+            : "",
+        has_cap_emit ?
+            ","
+            "emit:function(eventId,bytes){"
+                "if(typeof eventId!=='number')throw new TypeError('eventId must be a number');"
+                "if(!(bytes instanceof Uint8Array))throw new TypeError('bytes must be Uint8Array');"
+                "var dataLen=bytes.length;"
+                "if(dataLen>_mbpf_emit_meta.maxEventSize)return false;"  /* Event too large */
+                "var recordLen=8+dataLen;"  /* eventId(4) + dataLen(4) + data */
+                "var m=_mbpf_emit_meta,b=_mbpf_emit_buf,bs=m.bufSize;"
+                /* Calculate used space */
+                "var used=(m.head>=m.tail)?(m.head-m.tail):(bs-m.tail+m.head);"
+                "var free=bs-used-1;"  /* Leave 1 byte to distinguish full from empty */
+                /* Drop oldest events until we have space */
+                "while(free<recordLen&&m.eventCount>0){"
+                    /* Read length of oldest event at tail */
+                    "var oldLen=(b[(m.tail+4)%bs]|(b[(m.tail+5)%bs]<<8)|(b[(m.tail+6)%bs]<<16)|(b[(m.tail+7)%bs]<<24))>>>0;"
+                    "var oldRecLen=8+oldLen;"
+                    "m.tail=(m.tail+oldRecLen)%bs;"
+                    "m.eventCount--;"
+                    "m.dropped++;"
+                    "free+=oldRecLen;"
+                "}"
+                "if(free<recordLen)return false;"  /* Still not enough space (shouldn't happen) */
+                /* Write eventId (4 bytes LE) */
+                "var eid=eventId>>>0;"
+                "b[m.head]=eid&0xFF;b[(m.head+1)%bs]=(eid>>8)&0xFF;"
+                "b[(m.head+2)%bs]=(eid>>16)&0xFF;b[(m.head+3)%bs]=(eid>>24)&0xFF;"
+                /* Write dataLen (4 bytes LE) */
+                "b[(m.head+4)%bs]=dataLen&0xFF;b[(m.head+5)%bs]=(dataLen>>8)&0xFF;"
+                "b[(m.head+6)%bs]=(dataLen>>16)&0xFF;b[(m.head+7)%bs]=(dataLen>>24)&0xFF;"
+                /* Write data bytes */
+                "for(var i=0;i<dataLen;i++)b[(m.head+8+i)%bs]=bytes[i];"
+                "m.head=(m.head+recordLen)%bs;"
+                "m.eventCount++;"
+                "return true;"
             "}"
             : "");
 
@@ -2229,6 +2349,16 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         return MBPF_ERR_NO_MEM;
     }
 
+    /* Create emit buffer if CAP_EMIT is granted */
+    if (create_emit_buffer(prog) != 0) {
+        free_maps(prog);
+        free(prog->instances);
+        free(prog->bytecode);
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_NO_MEM;
+    }
+
     /* Create each instance with its own JSContext and heap */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
         err = create_instance(prog, i, heap_size, bytecode_data, bytecode_len);
@@ -2239,6 +2369,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
             }
             free(prog->instances);
             free(prog->bytecode);
+            free_emit_buffer(prog);
             free_maps(prog);
             mbpf_manifest_free(&prog->manifest);
             free(prog);
@@ -2258,6 +2389,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
             }
             free(prog->instances);
             free(prog->bytecode);
+            free_emit_buffer(prog);
             free_maps(prog);
             mbpf_manifest_free(&prog->manifest);
             free(prog);
@@ -2277,6 +2409,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
             }
             free(prog->instances);
             free(prog->bytecode);
+            free_emit_buffer(prog);
             free_maps(prog);
             mbpf_manifest_free(&prog->manifest);
             free(prog);
@@ -2378,6 +2511,9 @@ int mbpf_program_unload(mbpf_runtime_t *rt, mbpf_program_t *prog) {
         free(prog->instances);
         prog->instances = NULL;
     }
+
+    /* Clean up emit buffer */
+    free_emit_buffer(prog);
 
     /* Clean up map storage */
     free_maps(prog);
@@ -4312,6 +4448,51 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         }
     }
 
+    /* Sync emit buffer state from C to JS before running.
+     * This ensures host-side reads (which modify C state) are reflected in JS. */
+    if (prog->has_emit_cap && prog->emit_buffer) {
+        mbpf_emit_buffer_t *emit = prog->emit_buffer;
+
+        /* Update JS metadata from C state */
+        char sync_code[256];
+        snprintf(sync_code, sizeof(sync_code),
+            "(function(){"
+                "var m=_mbpf_emit_meta;"
+                "m.head=%u;"
+                "m.tail=%u;"
+                "m.dropped=%u;"
+                "m.eventCount=%u;"
+            "})()",
+            emit->head, emit->tail, emit->dropped, emit->event_count);
+
+        JSValue sync_result = JS_Eval(ctx, sync_code, strlen(sync_code),
+                                      "<emit_sync_in>", JS_EVAL_RETVAL);
+        if (JS_IsException(sync_result)) {
+            JS_GetException(ctx);  /* Clear exception state */
+        }
+
+        /* Copy buffer data from C to JS */
+        if (emit->buffer_size > 0) {
+            size_t code_size = (size_t)emit->buffer_size * 16 + 256;
+            char *data_code = malloc(code_size);
+            if (data_code) {
+                char *p = data_code;
+                char *end = data_code + code_size - 32;  /* Leave room */
+                p += sprintf(p, "(function(){var d=_mbpf_emit_buf;");
+                for (uint32_t j = 0; j < emit->buffer_size && p < end; j++) {
+                    p += sprintf(p, "d[%u]=%u;", j, emit->buffer[j]);
+                }
+                p += sprintf(p, "})()");
+                JSValue data_result = JS_Eval(ctx, data_code, strlen(data_code),
+                                               "<emit_data_in>", JS_EVAL_RETVAL);
+                if (JS_IsException(data_result)) {
+                    JS_GetException(ctx);  /* Clear exception state */
+                }
+                free(data_code);
+            }
+        }
+    }
+
     /* Check stack space: we need 3 slots (arg + function + this) */
     if (JS_StackCheck(ctx, 3)) {
         prog->stats.exceptions++;
@@ -4512,6 +4693,53 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
                 }
             } else {
                 JS_GetException(ctx);
+            }
+        }
+    }
+
+    /* Sync emit buffer state from JS to C storage.
+     * This allows host-side APIs to read events emitted by the program.
+     * We use direct property access rather than JS_Eval since MQuickJS
+     * has issues with nested function evals. */
+    if (prog->has_emit_cap && prog->emit_buffer) {
+        mbpf_emit_buffer_t *emit = prog->emit_buffer;
+
+        /* Get _mbpf_emit_meta and _mbpf_emit_buf from global object */
+        JSValue meta = JS_GetPropertyStr(ctx, global, "_mbpf_emit_meta");
+        JSValue buf = JS_GetPropertyStr(ctx, global, "_mbpf_emit_buf");
+
+        if (!JS_IsUndefined(meta) && !JS_IsException(meta) &&
+            !JS_IsUndefined(buf) && !JS_IsException(buf)) {
+            /* Read metadata */
+            JSValue vh = JS_GetPropertyStr(ctx, meta, "head");
+            JSValue vt = JS_GetPropertyStr(ctx, meta, "tail");
+            JSValue vd = JS_GetPropertyStr(ctx, meta, "dropped");
+            JSValue ve = JS_GetPropertyStr(ctx, meta, "eventCount");
+
+            int32_t head = 0, tail = 0, dropped = 0, event_count = 0;
+            JS_ToInt32(ctx, &head, vh);
+            JS_ToInt32(ctx, &tail, vt);
+            JS_ToInt32(ctx, &dropped, vd);
+            JS_ToInt32(ctx, &event_count, ve);
+
+            emit->head = (uint32_t)head;
+            emit->tail = (uint32_t)tail;
+            emit->dropped = (uint32_t)dropped;
+            emit->event_count = (uint32_t)event_count;
+
+            /* Copy buffer data if there are events */
+            if (event_count > 0) {
+                JSValue v_len = JS_GetPropertyStr(ctx, buf, "length");
+                int32_t buf_len = 0;
+                JS_ToInt32(ctx, &buf_len, v_len);
+
+                /* Copy bytes from JS Uint8Array to C buffer */
+                for (int32_t i = 0; i < buf_len && (uint32_t)i < emit->buffer_size; i++) {
+                    JSValue elem = JS_GetPropertyUint32(ctx, buf, (uint32_t)i);
+                    int32_t byte_val = 0;
+                    JS_ToInt32(ctx, &byte_val, elem);
+                    emit->buffer[i] = (uint8_t)byte_val;
+                }
             }
         }
     }
@@ -4767,4 +4995,113 @@ int mbpf_ring_dropped(mbpf_program_t *prog, int map_idx) {
     }
 
     return (int)storage->u.ring.dropped;
+}
+
+/* Emit event buffer access (host-side API for mbpf.emit events) */
+
+int mbpf_emit_read(mbpf_program_t *prog, uint32_t *out_event_id,
+                   void *out_data, size_t max_len) {
+    if (!prog || !prog->emit_buffer) {
+        return -1;
+    }
+
+    mbpf_emit_buffer_t *emit = prog->emit_buffer;
+
+    /* Check if buffer is empty */
+    if (emit->event_count == 0) {
+        return 0;
+    }
+
+    /* Read eventId (4 bytes, little-endian) with wrap-around */
+    uint32_t tail = emit->tail;
+    uint32_t buf_size = emit->buffer_size;
+    uint32_t event_id = emit->buffer[tail % buf_size] |
+                        ((uint32_t)emit->buffer[(tail + 1) % buf_size] << 8) |
+                        ((uint32_t)emit->buffer[(tail + 2) % buf_size] << 16) |
+                        ((uint32_t)emit->buffer[(tail + 3) % buf_size] << 24);
+
+    /* Read data length (4 bytes, little-endian) */
+    uint32_t len = emit->buffer[(tail + 4) % buf_size] |
+                   ((uint32_t)emit->buffer[(tail + 5) % buf_size] << 8) |
+                   ((uint32_t)emit->buffer[(tail + 6) % buf_size] << 16) |
+                   ((uint32_t)emit->buffer[(tail + 7) % buf_size] << 24);
+
+    /* Output event ID if requested */
+    if (out_event_id) {
+        *out_event_id = event_id;
+    }
+
+    /* Copy event data */
+    if (out_data && max_len > 0) {
+        size_t copy_len = len < max_len ? len : max_len;
+        uint32_t data_start = (tail + 8) % buf_size;
+        for (size_t i = 0; i < copy_len; i++) {
+            ((uint8_t *)out_data)[i] = emit->buffer[(data_start + i) % buf_size];
+        }
+    }
+
+    /* Consume the event: eventId(4) + dataLen(4) + data */
+    uint32_t record_size = 8 + len;
+    emit->tail = (tail + record_size) % buf_size;
+    emit->event_count--;
+
+    return (int)len;
+}
+
+int mbpf_emit_peek(mbpf_program_t *prog, uint32_t *out_event_id,
+                   void *out_data, size_t max_len) {
+    if (!prog || !prog->emit_buffer) {
+        return -1;
+    }
+
+    mbpf_emit_buffer_t *emit = prog->emit_buffer;
+
+    /* Check if buffer is empty */
+    if (emit->event_count == 0) {
+        return 0;
+    }
+
+    /* Read eventId (4 bytes, little-endian) with wrap-around */
+    uint32_t tail = emit->tail;
+    uint32_t buf_size = emit->buffer_size;
+    uint32_t event_id = emit->buffer[tail % buf_size] |
+                        ((uint32_t)emit->buffer[(tail + 1) % buf_size] << 8) |
+                        ((uint32_t)emit->buffer[(tail + 2) % buf_size] << 16) |
+                        ((uint32_t)emit->buffer[(tail + 3) % buf_size] << 24);
+
+    /* Read data length (4 bytes, little-endian) */
+    uint32_t len = emit->buffer[(tail + 4) % buf_size] |
+                   ((uint32_t)emit->buffer[(tail + 5) % buf_size] << 8) |
+                   ((uint32_t)emit->buffer[(tail + 6) % buf_size] << 16) |
+                   ((uint32_t)emit->buffer[(tail + 7) % buf_size] << 24);
+
+    /* Output event ID if requested */
+    if (out_event_id) {
+        *out_event_id = event_id;
+    }
+
+    /* Copy event data (without consuming) */
+    if (out_data && max_len > 0) {
+        size_t copy_len = len < max_len ? len : max_len;
+        uint32_t data_start = (tail + 8) % buf_size;
+        for (size_t i = 0; i < copy_len; i++) {
+            ((uint8_t *)out_data)[i] = emit->buffer[(data_start + i) % buf_size];
+        }
+    }
+
+    return (int)len;
+}
+
+int mbpf_emit_count(mbpf_program_t *prog) {
+    if (!prog || !prog->emit_buffer) {
+        return -1;
+    }
+    return (int)prog->emit_buffer->event_count;
+}
+
+int mbpf_emit_dropped(mbpf_program_t *prog) {
+    if (!prog || !prog->emit_buffer) {
+        return -1;
+    }
+    return (int)prog->emit_buffer->dropped;
 }
