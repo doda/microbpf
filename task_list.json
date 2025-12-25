@@ -955,7 +955,7 @@
       "Trigger OOM and verify OOM count increments",
       "Trigger budget exceeded and verify counter increments"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "observability-trace-logs",
