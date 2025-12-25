@@ -35,7 +35,8 @@
 
 /* Build a minimal valid JSON manifest */
 static size_t build_test_manifest(uint8_t *buf, size_t cap) {
-    const char *json =
+    char json[1024];
+    int len = snprintf(json, sizeof(json),
         "{"
         "\"program_name\":\"debug_test\","
         "\"program_version\":\"1.0.0\","
@@ -43,7 +44,7 @@ static size_t build_test_manifest(uint8_t *buf, size_t cap) {
         "\"hook_ctx_abi_version\":1,"
         "\"entry_symbol\":\"mbpf_prog\","
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
@@ -52,11 +53,12 @@ static size_t build_test_manifest(uint8_t *buf, size_t cap) {
         "{\"name\":\"counter\",\"type\":1,\"key_size\":4,\"value_size\":8,\"max_entries\":10,\"flags\":0},"
         "{\"name\":\"data\",\"type\":2,\"key_size\":16,\"value_size\":64,\"max_entries\":100,\"flags\":0}"
         "]"
-        "}";
-    size_t len = strlen(json);
-    if (len > cap) return 0;
+        "}",
+        mbpf_runtime_word_size(),
+        mbpf_runtime_endianness());
+    if (len < 0 || (size_t)len > cap) return 0;
     memcpy(buf, json, len);
-    return len;
+    return (size_t)len;
 }
 
 /* Sample bytecode (minimal valid for testing - fake bytecode) */

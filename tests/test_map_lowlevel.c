@@ -44,14 +44,14 @@ static size_t build_manifest_with_array(uint8_t *buf, size_t cap, int hook_type,
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"myarray\",\"type\":1,\"key_size\":0,\"value_size\":%u,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        hook_type, value_size, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(), value_size, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);
@@ -70,14 +70,14 @@ static size_t build_manifest_with_hash(uint8_t *buf, size_t cap, int hook_type,
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"myhash\",\"type\":2,\"key_size\":%u,\"value_size\":%u,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        hook_type, key_size, value_size, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(), key_size, value_size, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);
@@ -862,14 +862,14 @@ static size_t build_manifest_with_lru(uint8_t *buf, size_t cap, int hook_type,
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"mylru\",\"type\":3,\"key_size\":%u,\"value_size\":%u,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        hook_type, key_size, value_size, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(), key_size, value_size, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);

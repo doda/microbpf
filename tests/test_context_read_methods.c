@@ -48,12 +48,13 @@ static size_t build_test_manifest(uint8_t *buf, size_t cap, int hook_type) {
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\"]"
         "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness(),
         hook_type);
     size_t len = strlen(json);
     if (len > cap) return 0;

@@ -86,12 +86,13 @@ static size_t build_manifest(uint8_t *buf, size_t cap,
             "\"hook_type\":1,"
             "\"hook_ctx_abi_version\":1,"
             "\"mquickjs_bytecode_version\":1,"
-            "\"target\":{\"word_size\":64,\"endianness\":0},"
+            "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
             "\"budgets\":{\"max_steps\":%u,\"max_helpers\":%u,\"max_wall_time_us\":%u},"
             "\"capabilities\":[\"CAP_LOG\"]"
             "}",
+            mbpf_runtime_word_size(), mbpf_runtime_endianness(),
             max_steps, max_helpers, max_wall_time_us);
     } else {
         snprintf(json, sizeof(json),
@@ -101,12 +102,13 @@ static size_t build_manifest(uint8_t *buf, size_t cap,
             "\"hook_type\":1,"
             "\"hook_ctx_abi_version\":1,"
             "\"mquickjs_bytecode_version\":1,"
-            "\"target\":{\"word_size\":64,\"endianness\":0},"
+            "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
             "\"budgets\":{\"max_steps\":%u,\"max_helpers\":%u},"
             "\"capabilities\":[\"CAP_LOG\"]"
             "}",
+            mbpf_runtime_word_size(), mbpf_runtime_endianness(),
             max_steps, max_helpers);
     }
     size_t len = strlen(json);
@@ -664,10 +666,11 @@ TEST(exception_defaults_per_hook_type) {
             "{\"program_name\":\"test\",\"program_version\":\"1.0.0\","
             "\"hook_type\":1,\"hook_ctx_abi_version\":1,"
             "\"mquickjs_bytecode_version\":1,"
-            "\"target\":{\"word_size\":64,\"endianness\":0},"
+            "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,\"heap_size\":65536,"
             "\"budgets\":{\"max_steps\":1,\"max_helpers\":1000},"
-            "\"capabilities\":[\"CAP_LOG\"]}");
+            "\"capabilities\":[\"CAP_LOG\"]}",
+            mbpf_runtime_word_size(), mbpf_runtime_endianness());
 
         uint8_t pkg[8192];
         uint8_t manifest[512];

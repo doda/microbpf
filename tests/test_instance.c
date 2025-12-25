@@ -38,7 +38,8 @@
 
 /* Build a JSON test manifest */
 static size_t build_test_manifest(uint8_t *buf, size_t cap) {
-    const char *json =
+    char json[1024];
+    int len = snprintf(json, sizeof(json),
         "{"
         "\"program_name\":\"test_prog\","
         "\"program_version\":\"1.0.0\","
@@ -46,16 +47,15 @@ static size_t build_test_manifest(uint8_t *buf, size_t cap) {
         "\"hook_ctx_abi_version\":1,"
         "\"entry_symbol\":\"mbpf_prog\","
         "\"mquickjs_bytecode_version\":8,"
-        "\"target\":{\"word_size\":64,\"endianness\":\"little\"},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":16384,"
         "\"budgets\":{\"max_steps\":10000,\"max_helpers\":100},"
         "\"capabilities\":[\"LOG\"]"
-        "}";
-    size_t len = strlen(json);
-    if (len > cap) return 0;
+        "}", mbpf_runtime_word_size(), mbpf_runtime_endianness());
+    if (len <= 0 || (size_t)len > cap) return 0;
     memcpy(buf, json, len);
-    return len;
+    return (size_t)len;
 }
 
 /* Build a complete .mbpf package with bytecode */

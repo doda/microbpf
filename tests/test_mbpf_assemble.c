@@ -39,20 +39,25 @@ static int tests_failed = 0;
     } \
 } while (0)
 
-/* Sample manifest JSON */
-static const char *sample_manifest =
-    "{"
-    "\"program_name\":\"test_prog\","
-    "\"program_version\":\"1.0.0\","
-    "\"hook_type\":1,"
-    "\"hook_ctx_abi_version\":1,"
-    "\"mquickjs_bytecode_version\":32769,"
-    "\"target\":{\"word_size\":64,\"endianness\":\"little\"},"
-    "\"mbpf_api_version\":65536,"
-    "\"heap_size\":8192,"
-    "\"budgets\":{\"max_steps\":10000,\"max_helpers\":100},"
-    "\"capabilities\":[]"
-    "}";
+/* Sample manifest JSON - built dynamically with runtime word size */
+static char sample_manifest[512];
+static void init_sample_manifest(void) {
+    snprintf(sample_manifest, sizeof(sample_manifest),
+        "{"
+        "\"program_name\":\"test_prog\","
+        "\"program_version\":\"1.0.0\","
+        "\"hook_type\":1,"
+        "\"hook_ctx_abi_version\":1,"
+        "\"mquickjs_bytecode_version\":32769,"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
+        "\"mbpf_api_version\":65536,"
+        "\"heap_size\":8192,"
+        "\"budgets\":{\"max_steps\":10000,\"max_helpers\":100},"
+        "\"capabilities\":[]"
+        "}",
+        mbpf_runtime_word_size(),
+        mbpf_runtime_endianness());
+}
 
 /* Sample bytecode (just placeholder bytes for testing) */
 static const uint8_t sample_bytecode[] = {0x02, 0x00, 0x00, 0x00, 0x01, 0x80};
@@ -399,6 +404,9 @@ static int test_empty_section(void) {
 }
 
 int main(void) {
+    /* Initialize sample manifest with runtime word size */
+    init_sample_manifest();
+
     printf("microBPF Package Assembly Tests\n");
     printf("================================\n\n");
 

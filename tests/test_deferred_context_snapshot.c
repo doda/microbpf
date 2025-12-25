@@ -39,19 +39,21 @@
 
 /* Helper to build a minimal valid JSON manifest with TRACEPOINT hook type */
 static size_t build_test_manifest(uint8_t *buf, size_t cap) {
-    const char *json =
+    char json[512];
+    snprintf(json, sizeof(json),
         "{"
         "\"program_name\":\"context_snapshot_test\","
         "\"program_version\":\"1.0.0\","
         "\"hook_type\":1,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\"]"
-        "}";
+        "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness());
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);
@@ -807,19 +809,21 @@ TEST(timer_context_snapshot) {
     ASSERT_NOT_NULL(bytecode);
 
     /* Create TIMER package */
-    const char *timer_manifest =
+    char timer_manifest[512];
+    snprintf(timer_manifest, sizeof(timer_manifest),
         "{"
         "\"program_name\":\"timer_snapshot_test\","
         "\"program_version\":\"1.0.0\","
         "\"hook_type\":2,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\"]"
-        "}";
+        "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness());
     size_t manifest_len = strlen(timer_manifest);
 
     uint8_t pkg[8192];

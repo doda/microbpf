@@ -61,14 +61,15 @@ static size_t build_manifest_with_array_map(uint8_t *buf, size_t cap, int hook_t
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"%s\",\"type\":1,\"key_size\":4,\"value_size\":%u,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        hook_type, map_name, value_size, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(),
+        map_name, value_size, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);
@@ -87,14 +88,15 @@ static size_t build_manifest_with_hash_map(uint8_t *buf, size_t cap, int hook_ty
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"%s\",\"type\":2,\"key_size\":%u,\"value_size\":%u,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        hook_type, map_name, key_size, value_size, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(),
+        map_name, key_size, value_size, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);
@@ -112,14 +114,15 @@ static size_t build_manifest_with_counter_map(uint8_t *buf, size_t cap, int hook
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"%s\",\"type\":6,\"key_size\":0,\"value_size\":8,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        hook_type, map_name, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(),
+        map_name, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);
@@ -138,14 +141,15 @@ static size_t build_manifest_with_percpu_array(uint8_t *buf, size_t cap, int hoo
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"%s\",\"type\":7,\"key_size\":4,\"value_size\":%u,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        hook_type, map_name, value_size, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(),
+        map_name, value_size, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);

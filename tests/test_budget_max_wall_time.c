@@ -85,12 +85,13 @@ static size_t build_manifest_with_wall_time(uint8_t *buf, size_t cap,
         "\"hook_type\":1,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":%u,\"max_helpers\":1000,\"max_wall_time_us\":%u},"
         "\"capabilities\":[\"CAP_LOG\"]"
         "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness(),
         max_steps, max_wall_time_us);
     size_t len = strlen(json);
     if (len > cap) return 0;
@@ -516,12 +517,13 @@ TEST(safe_default_on_net_rx_wall_time_exceeded) {
         "\"hook_type\":3,"  /* NET_RX */
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":0,\"max_helpers\":1000,\"max_wall_time_us\":100},"
         "\"capabilities\":[\"CAP_LOG\"]"
-        "}");
+        "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness());
 
     uint8_t manifest[512];
     size_t manifest_len = strlen(json);
@@ -617,12 +619,13 @@ TEST(safe_default_on_security_wall_time_exceeded) {
         "\"hook_type\":5,"  /* SECURITY */
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":0,\"max_helpers\":1000,\"max_wall_time_us\":100},"
         "\"capabilities\":[\"CAP_LOG\"]"
-        "}");
+        "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness());
 
     uint8_t manifest[512];
     size_t manifest_len = strlen(json);

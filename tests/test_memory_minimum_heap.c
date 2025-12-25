@@ -90,12 +90,13 @@ static size_t build_manifest_with_heap(uint8_t *buf, size_t cap, uint32_t heap_s
         "\"hook_type\":1,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":%u,"
         "\"budgets\":{\"max_steps\":10000,\"max_helpers\":100},"
         "\"capabilities\":[\"CAP_LOG\"]"
         "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness(),
         heap_size);
     size_t len = strlen(json);
     if (len > cap) return 0;

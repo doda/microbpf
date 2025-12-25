@@ -47,12 +47,12 @@ static size_t build_test_manifest(uint8_t *buf, size_t cap, const char *entry_sy
             "\"hook_ctx_abi_version\":1,"
             "\"entry_symbol\":\"%s\","
             "\"mquickjs_bytecode_version\":1,"
-            "\"target\":{\"word_size\":64,\"endianness\":0},"
+            "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
             "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
             "\"capabilities\":[\"CAP_LOG\"]"
-            "}", entry_symbol);
+            "}", entry_symbol, mbpf_runtime_word_size(), mbpf_runtime_endianness());
     } else {
         len = snprintf(json, sizeof(json),
             "{"
@@ -61,12 +61,12 @@ static size_t build_test_manifest(uint8_t *buf, size_t cap, const char *entry_sy
             "\"hook_type\":1,"
             "\"hook_ctx_abi_version\":1,"
             "\"mquickjs_bytecode_version\":1,"
-            "\"target\":{\"word_size\":64,\"endianness\":0},"
+            "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
             "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
             "\"capabilities\":[\"CAP_LOG\"]"
-            "}");
+            "}", mbpf_runtime_word_size(), mbpf_runtime_endianness());
     }
     if (len <= 0 || (size_t)len >= sizeof(json)) return 0;
     if ((size_t)len > cap) return 0;

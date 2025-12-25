@@ -47,13 +47,15 @@ static size_t build_manifest_with_helper_versions(uint8_t *buf, size_t cap,
         "\"hook_type\":1,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":%u,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\"]"
         "%s%s"
-        "}", MBPF_API_VERSION,
+        "}",
+        mbpf_runtime_word_size(), mbpf_runtime_endianness(),
+        MBPF_API_VERSION,
         helper_versions_json ? ",\"helper_versions\":" : "",
         helper_versions_json ? helper_versions_json : "");
     if ((size_t)len >= cap) return 0;

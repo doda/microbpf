@@ -3304,6 +3304,19 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         return MBPF_ERR_API_VERSION;
     }
 
+    /* Validate target architecture matches runtime (§15.1):
+     * MQuickJS bytecode is architecture-dependent (word size and endianness).
+     * Packages must be built for the target platform. Cross-loading
+     * (mismatched word size or endianness) is rejected. */
+    uint8_t runtime_word_size = mbpf_runtime_word_size();
+    uint8_t runtime_endianness = mbpf_runtime_endianness();
+    if (prog->manifest.target.word_size != runtime_word_size ||
+        prog->manifest.target.endianness != runtime_endianness) {
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_TARGET_MISMATCH;
+    }
+
     /* Validate per-helper versions if specified (§11.5, §12.3):
      * - Major versions must match exactly
      * - Runtime minor must be >= program's required minor
@@ -6048,6 +6061,17 @@ const char *mbpf_version_string(void) {
 
 uint32_t mbpf_api_version(void) {
     return MBPF_API_VERSION;
+}
+
+/* Runtime target architecture info */
+uint8_t mbpf_runtime_word_size(void) {
+    return (uint8_t)(sizeof(void*) * 8);  /* 32 or 64 */
+}
+
+uint8_t mbpf_runtime_endianness(void) {
+    /* Detect endianness at runtime */
+    union { uint16_t u; uint8_t b[2]; } test = { .u = 0x0102 };
+    return test.b[0] == 0x01 ? 1 : 0;  /* 1 = big, 0 = little */
 }
 
 /* Hook ABI version query */

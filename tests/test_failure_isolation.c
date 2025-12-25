@@ -81,14 +81,15 @@ static size_t build_manifest(uint8_t *buf, size_t cap, int hook_type, int includ
             "\"hook_type\":%d,"
             "\"hook_ctx_abi_version\":1,"
             "\"mquickjs_bytecode_version\":1,"
-            "\"target\":{\"word_size\":64,\"endianness\":0},"
+            "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
             "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
             "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
             "\"maps\":[{\"name\":\"shared\",\"type\":1,\"key_size\":4,\"value_size\":4,\"max_entries\":10,\"flags\":0}]"
             "}",
-            hook_type);
+            hook_type,
+            mbpf_runtime_word_size(), mbpf_runtime_endianness());
     } else {
         snprintf(json, sizeof(json),
             "{"
@@ -97,13 +98,14 @@ static size_t build_manifest(uint8_t *buf, size_t cap, int hook_type, int includ
             "\"hook_type\":%d,"
             "\"hook_ctx_abi_version\":1,"
             "\"mquickjs_bytecode_version\":1,"
-            "\"target\":{\"word_size\":64,\"endianness\":0},"
+            "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
             "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
             "\"capabilities\":[\"CAP_LOG\"]"
             "}",
-            hook_type);
+            hook_type,
+            mbpf_runtime_word_size(), mbpf_runtime_endianness());
     }
     size_t len = strlen(json);
     if (len > cap) return 0;

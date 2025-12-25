@@ -991,7 +991,7 @@
       "Load on 64-bit runtime - verify works",
       "Cross-load (32 on 64 or vice versa) - verify rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "target-endianness",

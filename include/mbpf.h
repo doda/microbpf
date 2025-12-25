@@ -108,6 +108,7 @@ typedef enum {
     MBPF_ERR_STILL_ATTACHED     = -24,  /* Program still attached, cannot update */
     MBPF_ERR_API_VERSION        = -25,  /* Helper API version incompatible */
     MBPF_ERR_HELPER_VERSION     = -26,  /* Per-helper version incompatible */
+    MBPF_ERR_TARGET_MISMATCH    = -27,  /* Target word size/endianness mismatch */
 } mbpf_error_t;
 
 /* Capabilities */
@@ -334,6 +335,10 @@ mbpf_instance_t *mbpf_program_get_instance(mbpf_program_t *prog, uint32_t idx);
 /* Version info */
 const char *mbpf_version_string(void);
 uint32_t mbpf_api_version(void);
+
+/* Runtime target architecture info */
+uint8_t mbpf_runtime_word_size(void);    /* Returns 32 or 64 */
+uint8_t mbpf_runtime_endianness(void);   /* Returns 0 (little) or 1 (big) */
 
 /* Hook ABI version query */
 uint32_t mbpf_hook_abi_version(mbpf_hook_type_t hook_type);

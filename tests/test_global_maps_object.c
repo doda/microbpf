@@ -43,7 +43,7 @@ static size_t build_manifest_with_two_maps(uint8_t *buf, size_t cap, int hook_ty
         "\"hook_type\":%d,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":1,"
-        "\"target\":{\"word_size\":64,\"endianness\":0},"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
         "\"mbpf_api_version\":1,"
         "\"heap_size\":65536,"
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
@@ -55,7 +55,8 @@ static size_t build_manifest_with_two_maps(uint8_t *buf, size_t cap, int hook_ty
         "}";
 
     char formatted[2048];
-    int len = snprintf(formatted, sizeof(formatted), json, hook_type);
+    int len = snprintf(formatted, sizeof(formatted), json, hook_type,
+                       mbpf_runtime_word_size(), mbpf_runtime_endianness());
     if ((size_t)len >= cap) return 0;
     memcpy(buf, formatted, len);
     return (size_t)len;
