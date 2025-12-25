@@ -699,7 +699,7 @@
       "Call helper requiring CAP_TIME without capability - verify throws",
       "Configure platform allow-list and verify enforcement"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "capability-categories",

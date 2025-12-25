@@ -2896,6 +2896,16 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         return MBPF_ERR_HEAP_TOO_SMALL;
     }
 
+    /* Validate capabilities: program must not request capabilities not allowed by runtime */
+    uint32_t requested_caps = prog->manifest.capabilities;
+    uint32_t allowed_caps = rt->config.allowed_capabilities;
+    if ((requested_caps & ~allowed_caps) != 0) {
+        /* Program requests capabilities that are not allowed */
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_CAPABILITY_DENIED;
+    }
+
     /* Get bytecode section */
     const void *bytecode_data;
     size_t bytecode_len;
@@ -3597,6 +3607,14 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
     if (new_manifest.heap_size < MBPF_MIN_HEAP_SIZE) {
         mbpf_manifest_free(&new_manifest);
         return MBPF_ERR_HEAP_TOO_SMALL;
+    }
+
+    /* Validate capabilities: program must not request capabilities not allowed by runtime */
+    uint32_t requested_caps = new_manifest.capabilities;
+    uint32_t allowed_caps = rt->config.allowed_capabilities;
+    if ((requested_caps & ~allowed_caps) != 0) {
+        mbpf_manifest_free(&new_manifest);
+        return MBPF_ERR_CAPABILITY_DENIED;
     }
 
     /* Get new bytecode section */

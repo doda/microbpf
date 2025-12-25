@@ -420,6 +420,16 @@ if [ -f build/test_memory_minimum_heap ]; then
     fi
 fi
 
+# Run capability enforcement tests
+if [ -f build/test_capability_enforcement ]; then
+    ./build/test_capability_enforcement
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Capability enforcement tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
