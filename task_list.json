@@ -859,7 +859,7 @@
       "Verify mbpf.u64LoadLE and mbpf.u64StoreLE exist",
       "Verify optional helpers present based on config"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "global-maps-object",

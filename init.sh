@@ -490,6 +490,16 @@ if [ -f build/test_deferred_queue ]; then
     fi
 fi
 
+# Run global mbpf object tests
+if [ -f build/test_global_mbpf_object ]; then
+    ./build/test_global_mbpf_object
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Global mbpf object tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
