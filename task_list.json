@@ -467,7 +467,7 @@
       "Update on CPU0, read on CPU1 - verify isolation",
       "Aggregate values across CPUs if API supports"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-ring-buffer",

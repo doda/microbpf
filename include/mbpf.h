@@ -58,10 +58,15 @@ typedef enum {
     MBPF_MAP_TYPE_ARRAY   = 1,
     MBPF_MAP_TYPE_HASH    = 2,
     MBPF_MAP_TYPE_LRU     = 3,
-    MBPF_MAP_TYPE_PERCPU  = 4,
+    MBPF_MAP_TYPE_PERCPU  = 4,  /* Reserved for backward compatibility */
     MBPF_MAP_TYPE_RING    = 5,
     MBPF_MAP_TYPE_COUNTER = 6,
+    MBPF_MAP_TYPE_PERCPU_ARRAY = 7,  /* Per-CPU array map */
+    MBPF_MAP_TYPE_PERCPU_HASH  = 8,  /* Per-CPU hash map */
 } mbpf_map_type_t;
+
+/* Map flags */
+#define MBPF_MAP_FLAG_PERCPU  (1 << 0)  /* Per-CPU variant of map type */
 
 /* Error codes */
 typedef enum {

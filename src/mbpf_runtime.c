@@ -66,6 +66,32 @@ typedef struct mbpf_lru_hash_map {
 } mbpf_lru_hash_map_t;
 
 /*
+ * Per-CPU array map storage.
+ * Each CPU/instance has its own independent array map.
+ * This allows lock-free concurrent access from different CPUs.
+ */
+typedef struct mbpf_percpu_array_map {
+    uint32_t max_entries;       /* Maximum number of entries per CPU */
+    uint32_t value_size;        /* Size of each value in bytes */
+    uint32_t num_cpus;          /* Number of CPU instances */
+    uint8_t **values;           /* Array of per-CPU value arrays */
+    uint8_t **valid;            /* Array of per-CPU validity bitmaps */
+} mbpf_percpu_array_map_t;
+
+/*
+ * Per-CPU hash map storage.
+ * Each CPU/instance has its own independent hash map.
+ */
+typedef struct mbpf_percpu_hash_map {
+    uint32_t max_entries;       /* Maximum number of entries per CPU */
+    uint32_t key_size;          /* Size of each key in bytes */
+    uint32_t value_size;        /* Size of each value in bytes */
+    uint32_t num_cpus;          /* Number of CPU instances */
+    uint32_t *counts;           /* Array of per-CPU entry counts */
+    uint8_t **buckets;          /* Array of per-CPU bucket arrays */
+} mbpf_percpu_hash_map_t;
+
+/*
  * Generic map storage container.
  */
 typedef struct mbpf_map_storage {
@@ -75,6 +101,8 @@ typedef struct mbpf_map_storage {
         mbpf_array_map_t array;
         mbpf_hash_map_t hash;
         mbpf_lru_hash_map_t lru_hash;
+        mbpf_percpu_array_map_t percpu_array;
+        mbpf_percpu_hash_map_t percpu_hash;
     } u;
 } mbpf_map_storage_t;
 
@@ -136,9 +164,10 @@ static void default_log_fn(int level, const char *msg) {
 
 /*
  * Create map storage from manifest definitions.
+ * For per-CPU maps, num_instances copies are allocated.
  * Returns 0 on success, -1 on error.
  */
-static int create_maps_from_manifest(mbpf_program_t *prog) {
+static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instances) {
     if (!prog->manifest.maps || prog->manifest.map_count == 0) {
         prog->maps = NULL;
         prog->map_count = 0;
@@ -158,9 +187,20 @@ static int create_maps_from_manifest(mbpf_program_t *prog) {
 
         strncpy(storage->name, def->name, sizeof(storage->name) - 1);
         storage->name[sizeof(storage->name) - 1] = '\0';
-        storage->type = def->type;
 
-        if (def->type == MBPF_MAP_TYPE_ARRAY) {
+        /* Determine effective map type based on type and flags.
+         * ARRAY or HASH maps with MBPF_MAP_FLAG_PERCPU become per-CPU variants. */
+        uint32_t effective_type = def->type;
+        if (def->flags & MBPF_MAP_FLAG_PERCPU) {
+            if (def->type == MBPF_MAP_TYPE_ARRAY) {
+                effective_type = MBPF_MAP_TYPE_PERCPU_ARRAY;
+            } else if (def->type == MBPF_MAP_TYPE_HASH) {
+                effective_type = MBPF_MAP_TYPE_PERCPU_HASH;
+            }
+        }
+        storage->type = effective_type;
+
+        if (effective_type == MBPF_MAP_TYPE_ARRAY) {
             mbpf_array_map_t *arr = &storage->u.array;
             arr->max_entries = def->max_entries;
             arr->value_size = def->value_size;
@@ -180,7 +220,7 @@ static int create_maps_from_manifest(mbpf_program_t *prog) {
                 arr->values = NULL;
                 goto cleanup;
             }
-        } else if (def->type == MBPF_MAP_TYPE_HASH) {
+        } else if (effective_type == MBPF_MAP_TYPE_HASH) {
             mbpf_hash_map_t *hash = &storage->u.hash;
             hash->max_entries = def->max_entries;
             hash->key_size = def->key_size;
@@ -194,7 +234,7 @@ static int create_maps_from_manifest(mbpf_program_t *prog) {
             if (!hash->buckets) {
                 goto cleanup;
             }
-        } else if (def->type == MBPF_MAP_TYPE_LRU) {
+        } else if (effective_type == MBPF_MAP_TYPE_LRU) {
             mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
             lru->max_entries = def->max_entries;
             lru->key_size = def->key_size;
@@ -209,6 +249,80 @@ static int create_maps_from_manifest(mbpf_program_t *prog) {
             lru->buckets = calloc(buckets_size, 1);
             if (!lru->buckets) {
                 goto cleanup;
+            }
+        } else if (effective_type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
+            /* Per-CPU array: allocate separate storage for each CPU */
+            mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
+            pca->max_entries = def->max_entries;
+            pca->value_size = def->value_size;
+            pca->num_cpus = num_instances;
+
+            /* Allocate arrays of pointers for per-CPU storage */
+            pca->values = calloc(num_instances, sizeof(uint8_t *));
+            pca->valid = calloc(num_instances, sizeof(uint8_t *));
+            if (!pca->values || !pca->valid) {
+                free(pca->values);
+                free(pca->valid);
+                pca->values = NULL;
+                pca->valid = NULL;
+                goto cleanup;
+            }
+
+            /* Allocate per-CPU value arrays and validity bitmaps */
+            size_t values_size = (size_t)pca->max_entries * pca->value_size;
+            size_t bitmap_size = pca->max_entries;  /* One byte per entry for simplicity */
+            for (uint32_t cpu = 0; cpu < num_instances; cpu++) {
+                pca->values[cpu] = calloc(values_size, 1);
+                pca->valid[cpu] = calloc(bitmap_size, 1);
+                if (!pca->values[cpu] || !pca->valid[cpu]) {
+                    /* Clean up already allocated CPU storage */
+                    for (uint32_t c = 0; c <= cpu; c++) {
+                        free(pca->values[c]);
+                        free(pca->valid[c]);
+                    }
+                    free(pca->values);
+                    free(pca->valid);
+                    pca->values = NULL;
+                    pca->valid = NULL;
+                    goto cleanup;
+                }
+            }
+        } else if (effective_type == MBPF_MAP_TYPE_PERCPU_HASH) {
+            /* Per-CPU hash: allocate separate storage for each CPU */
+            mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
+            pch->max_entries = def->max_entries;
+            pch->key_size = def->key_size;
+            pch->value_size = def->value_size;
+            pch->num_cpus = num_instances;
+
+            /* Allocate arrays for per-CPU storage */
+            pch->buckets = calloc(num_instances, sizeof(uint8_t *));
+            pch->counts = calloc(num_instances, sizeof(uint32_t));
+            if (!pch->buckets || !pch->counts) {
+                free(pch->buckets);
+                free(pch->counts);
+                pch->buckets = NULL;
+                pch->counts = NULL;
+                goto cleanup;
+            }
+
+            /* Allocate per-CPU bucket arrays */
+            size_t bucket_size = 1 + pch->key_size + pch->value_size;
+            size_t buckets_size = (size_t)pch->max_entries * bucket_size;
+            for (uint32_t cpu = 0; cpu < num_instances; cpu++) {
+                pch->buckets[cpu] = calloc(buckets_size, 1);
+                if (!pch->buckets[cpu]) {
+                    /* Clean up already allocated CPU storage */
+                    for (uint32_t c = 0; c < cpu; c++) {
+                        free(pch->buckets[c]);
+                    }
+                    free(pch->buckets);
+                    free(pch->counts);
+                    pch->buckets = NULL;
+                    pch->counts = NULL;
+                    goto cleanup;
+                }
+                pch->counts[cpu] = 0;
             }
         }
     }
@@ -226,6 +340,25 @@ cleanup:
             free(storage->u.hash.buckets);
         } else if (storage->type == MBPF_MAP_TYPE_LRU) {
             free(storage->u.lru_hash.buckets);
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
+            mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
+            if (pca->values && pca->valid) {
+                for (uint32_t c = 0; c < pca->num_cpus; c++) {
+                    free(pca->values[c]);
+                    free(pca->valid[c]);
+                }
+            }
+            free(pca->values);
+            free(pca->valid);
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH) {
+            mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
+            if (pch->buckets) {
+                for (uint32_t c = 0; c < pch->num_cpus; c++) {
+                    free(pch->buckets[c]);
+                }
+            }
+            free(pch->buckets);
+            free(pch->counts);
         }
     }
     free(prog->maps);
@@ -249,6 +382,25 @@ static void free_maps(mbpf_program_t *prog) {
             free(storage->u.hash.buckets);
         } else if (storage->type == MBPF_MAP_TYPE_LRU) {
             free(storage->u.lru_hash.buckets);
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
+            mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
+            if (pca->values && pca->valid) {
+                for (uint32_t c = 0; c < pca->num_cpus; c++) {
+                    free(pca->values[c]);
+                    free(pca->valid[c]);
+                }
+            }
+            free(pca->values);
+            free(pca->valid);
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH) {
+            mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
+            if (pch->buckets) {
+                for (uint32_t c = 0; c < pch->num_cpus; c++) {
+                    free(pch->buckets[c]);
+                }
+            }
+            free(pch->buckets);
+            free(pch->counts);
         }
     }
     free(prog->maps);
@@ -259,8 +411,9 @@ static void free_maps(mbpf_program_t *prog) {
 /*
  * Create the 'maps' global object for a JS context.
  * Each map is exposed as a property with lookup/update methods.
+ * For per-CPU maps, instance_idx selects the CPU-local storage.
  */
-static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog) {
+static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t instance_idx) {
     if (!prog->maps || prog->map_count == 0) {
         return 0;  /* No maps to set up */
     }
@@ -668,6 +821,169 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog) {
                 (uint32_t)bucket_size);
             p += written;
             remaining -= written;
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
+            /* Per-CPU array map: each instance uses its own CPU-local storage */
+            mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
+
+            /* Create data array using this CPU's storage */
+            size_t total_bytes = (size_t)pca->max_entries * pca->value_size;
+            written = snprintf(p, remaining,
+                "_mapData[%u]=new Uint8Array(%zu);"
+                "_mapValid[%u]=new Uint8Array(%u);",
+                i, total_bytes, i, pca->max_entries);
+            p += written;
+            remaining -= written;
+
+            /* Create map object with lookup, update, and sumAll methods */
+            written = snprintf(p, remaining,
+                "maps['%s']={"
+                "lookup:function(idx,outBuf){"
+                    "if(typeof idx!=='number')throw new TypeError('index must be a number');"
+                    "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
+                    "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
+                    "if(outBuf.length<%u)throw new RangeError('outBuffer too small');"
+                    "if(!_mapValid[%u][idx])return false;"
+                    "var off=idx*%u;"
+                    "for(var i=0;i<%u;i++)outBuf[i]=_mapData[%u][off+i];"
+                    "return true;"
+                "},"
+                "update:function(idx,valueBuf){"
+                    "if(typeof idx!=='number')throw new TypeError('index must be a number');"
+                    "if(idx<0||idx>=%u)throw new RangeError('index out of bounds');"
+                    "if(!(valueBuf instanceof Uint8Array))throw new TypeError('valueBuffer must be Uint8Array');"
+                    "if(valueBuf.length<%u)throw new RangeError('valueBuffer too small');"
+                    "var off=idx*%u;"
+                    "for(var i=0;i<%u;i++)_mapData[%u][off+i]=valueBuf[i];"
+                    "_mapValid[%u][idx]=1;"
+                    "return true;"
+                "},"
+                "cpuId:function(){return %u;}"  /* Returns this instance's CPU ID */
+                "};",
+                storage->name,
+                pca->max_entries, pca->value_size,
+                i, pca->value_size, pca->value_size, i,
+                pca->max_entries, pca->value_size,
+                pca->value_size, pca->value_size, i,
+                i,
+                instance_idx);
+            p += written;
+            remaining -= written;
+        } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH) {
+            /* Per-CPU hash map: each instance uses its own CPU-local storage */
+            mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
+
+            size_t bucket_size = 1 + pch->key_size + pch->value_size;
+            size_t total_bytes = (size_t)pch->max_entries * bucket_size;
+
+            written = snprintf(p, remaining,
+                "_mapData[%u]=new Uint8Array(%zu);"
+                "_mapValid[%u]={count:0};",
+                i, total_bytes, i);
+            p += written;
+            remaining -= written;
+
+            /* Create hash map object with lookup, update, delete, and cpuId methods */
+            written = snprintf(p, remaining,
+                "maps['%s']=(function(){"
+                "var d=_mapData[%u];"
+                "var m=_mapValid[%u];"
+                "var maxE=%u;"
+                "var kS=%u;"
+                "var vS=%u;"
+                "var bS=%u;"
+                "function fnv(k){"
+                    "var h=2166136261>>>0;"
+                    "for(var i=0;i<kS;i++){"
+                        "h^=k[i];"
+                        "h=Math.imul(h,16777619)>>>0;"
+                    "}"
+                    "return h;"
+                "}"
+                "function keq(off,k){"
+                    "for(var i=0;i<kS;i++){"
+                        "if(d[off+1+i]!==k[i])return false;"
+                    "}"
+                    "return true;"
+                "}"
+                "return{"
+                "lookup:function(keyBuf,outBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "if(!(outBuf instanceof Uint8Array))throw new TypeError('outBuffer must be Uint8Array');"
+                    "if(outBuf.length<vS)throw new RangeError('outBuffer too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0)return false;"
+                        "if(d[off]===1&&keq(off,keyBuf)){"
+                            "for(var j=0;j<vS;j++)outBuf[j]=d[off+1+kS+j];"
+                            "return true;"
+                        "}"
+                    "}"
+                    "return false;"
+                "},"
+                "update:function(keyBuf,valueBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "if(!(valueBuf instanceof Uint8Array))throw new TypeError('value must be Uint8Array');"
+                    "if(valueBuf.length<vS)throw new RangeError('value too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "var firstDel=-1;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0){"
+                            "if(firstDel>=0)off=firstDel;"
+                            "d[off]=1;"
+                            "for(var j=0;j<kS;j++)d[off+1+j]=keyBuf[j];"
+                            "for(var j=0;j<vS;j++)d[off+1+kS+j]=valueBuf[j];"
+                            "m.count++;"
+                            "return true;"
+                        "}"
+                        "if(d[off]===2&&firstDel<0)firstDel=off;"
+                        "if(d[off]===1&&keq(off,keyBuf)){"
+                            "for(var j=0;j<vS;j++)d[off+1+kS+j]=valueBuf[j];"
+                            "return true;"
+                        "}"
+                    "}"
+                    "if(firstDel>=0){"
+                        "d[firstDel]=1;"
+                        "for(var j=0;j<kS;j++)d[firstDel+1+j]=keyBuf[j];"
+                        "for(var j=0;j<vS;j++)d[firstDel+1+kS+j]=valueBuf[j];"
+                        "m.count++;"
+                        "return true;"
+                    "}"
+                    "return false;"
+                "},"
+                "delete:function(keyBuf){"
+                    "if(!(keyBuf instanceof Uint8Array))throw new TypeError('key must be Uint8Array');"
+                    "if(keyBuf.length<kS)throw new RangeError('key too small');"
+                    "var h=fnv(keyBuf)%%maxE;"
+                    "for(var i=0;i<maxE;i++){"
+                        "var idx=(h+i)%%maxE;"
+                        "var off=idx*bS;"
+                        "if(d[off]===0)return false;"
+                        "if(d[off]===1&&keq(off,keyBuf)){"
+                            "d[off]=2;"
+                            "m.count--;"
+                            "return true;"
+                        "}"
+                    "}"
+                    "return false;"
+                "},"
+                "cpuId:function(){return %u;}"
+                "};"
+                "})();",
+                storage->name,
+                i, i,
+                pch->max_entries,
+                pch->key_size,
+                pch->value_size,
+                (uint32_t)bucket_size,
+                instance_idx);
+            p += written;
+            remaining -= written;
         }
     }
 
@@ -986,20 +1302,12 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         return MBPF_ERR_HEAP_TOO_SMALL;
     }
 
-    /* Create map storage from manifest definitions */
-    if (create_maps_from_manifest(prog) != 0) {
-        mbpf_manifest_free(&prog->manifest);
-        free(prog);
-        return MBPF_ERR_NO_MEM;
-    }
-
     /* Get bytecode section */
     const void *bytecode_data;
     size_t bytecode_len;
     err = mbpf_package_get_section(pkg, pkg_len, MBPF_SEC_BYTECODE,
                                    &bytecode_data, &bytecode_len);
     if (err != MBPF_OK) {
-        free_maps(prog);
         mbpf_manifest_free(&prog->manifest);
         free(prog);
         return MBPF_ERR_MISSING_SECTION;
@@ -1008,7 +1316,6 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     /* Store bytecode for reference (used by each instance) */
     prog->bytecode = malloc(bytecode_len);
     if (!prog->bytecode) {
-        free_maps(prog);
         mbpf_manifest_free(&prog->manifest);
         free(prog);
         return MBPF_ERR_NO_MEM;
@@ -1027,7 +1334,16 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     prog->instances = calloc(prog->instance_count, sizeof(mbpf_instance_t));
     if (!prog->instances) {
         free(prog->bytecode);
-        free_maps(prog);
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_NO_MEM;
+    }
+
+    /* Create map storage from manifest definitions.
+     * For per-CPU maps, we need instance_count which is now known. */
+    if (create_maps_from_manifest(prog, prog->instance_count) != 0) {
+        free(prog->instances);
+        free(prog->bytecode);
         mbpf_manifest_free(&prog->manifest);
         free(prog);
         return MBPF_ERR_NO_MEM;
@@ -1055,7 +1371,7 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
 
     /* Set up maps object in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
-        if (setup_maps_object(prog->instances[i].js_ctx, prog) != 0) {
+        if (setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
             }
