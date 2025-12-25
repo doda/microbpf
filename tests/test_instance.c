@@ -47,7 +47,7 @@ static size_t build_test_manifest(uint8_t *buf, size_t cap) {
         "\"entry_symbol\":\"mbpf_prog\","
         "\"mquickjs_bytecode_version\":8,"
         "\"target\":{\"word_size\":64,\"endianness\":\"little\"},"
-        "\"mbpf_api_version\":65536,"
+        "\"mbpf_api_version\":1,"
         "\"heap_size\":16384,"
         "\"budgets\":{\"max_steps\":10000,\"max_helpers\":100},"
         "\"capabilities\":[\"LOG\"]"

@@ -762,7 +762,7 @@
       "Load program requiring higher minor version than runtime - verify rejected",
       "Load program with lower minor version - verify succeeds"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "per-helper-versioning",

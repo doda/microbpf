@@ -2979,6 +2979,27 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         return err;
     }
 
+    /* Validate API version compatibility (§11.5):
+     * - Major versions must match exactly
+     * - Runtime minor version must be >= program's required minor version */
+    uint32_t prog_api_ver = prog->manifest.mbpf_api_version;
+    uint32_t runtime_api_ver = MBPF_API_VERSION;
+    uint16_t prog_major = (uint16_t)(prog_api_ver >> 16);
+    uint16_t prog_minor = (uint16_t)(prog_api_ver & 0xFFFF);
+    uint16_t runtime_major = (uint16_t)(runtime_api_ver >> 16);
+    uint16_t runtime_minor = (uint16_t)(runtime_api_ver & 0xFFFF);
+
+    if (prog_major != runtime_major) {
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_API_VERSION;
+    }
+    if (prog_minor > runtime_minor) {
+        mbpf_manifest_free(&prog->manifest);
+        free(prog);
+        return MBPF_ERR_API_VERSION;
+    }
+
     /* Validate heap_size is at least the platform minimum */
     if (prog->manifest.heap_size < MBPF_MIN_HEAP_SIZE) {
         mbpf_manifest_free(&prog->manifest);
