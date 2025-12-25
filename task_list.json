@@ -1049,7 +1049,7 @@
       "Verify no malloc/free calls from host library in hot path",
       "Verify fixed memory buffer is used for JS heap"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "context-object-reuse",

@@ -520,6 +520,16 @@ if [ -f build/test_rom_stdlib ]; then
     fi
 fi
 
+# Run no-dynamic-alloc runtime tests
+if [ -f build/test_no_dynamic_alloc ]; then
+    ./build/test_no_dynamic_alloc
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: No-dynamic-alloc runtime tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
