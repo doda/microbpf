@@ -907,7 +907,7 @@
       "Verify bytecode file is generated",
       "Verify -m32 flag works for 32-bit targets"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "toolchain-manifest-gen",

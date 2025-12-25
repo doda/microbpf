@@ -1,0 +1,102 @@
+#!/bin/bash
+# mbpf-compile - Compile JavaScript to MQuickJS bytecode for microBPF
+#
+# Usage: mbpf-compile [options] input.js -o output.qjbc
+#
+# Options:
+#   -o FILE      Output bytecode file (required)
+#   -m32         Generate 32-bit bytecode (for 32-bit targets)
+#   -h, --help   Show this help message
+#
+# Examples:
+#   mbpf-compile prog.js -o prog.qjbc
+#   mbpf-compile -m32 prog.js -o prog_32.qjbc
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+MQJS="$PROJECT_ROOT/deps/mquickjs/mqjs"
+
+usage() {
+    echo "Usage: mbpf-compile [options] input.js -o output.qjbc"
+    echo ""
+    echo "Compile JavaScript to MQuickJS bytecode for microBPF programs."
+    echo ""
+    echo "Options:"
+    echo "  -o FILE      Output bytecode file (required)"
+    echo "  -m32         Generate 32-bit bytecode (for 32-bit targets)"
+    echo "  -h, --help   Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  mbpf-compile prog.js -o prog.qjbc"
+    echo "  mbpf-compile -m32 prog.js -o prog_32.qjbc"
+    exit "${1:-0}"
+}
+
+# Check if mqjs compiler exists
+if [ ! -x "$MQJS" ]; then
+    echo "Error: mqjs compiler not found at $MQJS" >&2
+    echo "Run 'make mquickjs' to build the MQuickJS compiler first." >&2
+    exit 1
+fi
+
+# Parse arguments
+INPUT_FILE=""
+OUTPUT_FILE=""
+M32_FLAG=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            usage 0
+            ;;
+        -o)
+            shift
+            if [ -z "$1" ]; then
+                echo "Error: -o requires an output file argument" >&2
+                exit 1
+            fi
+            OUTPUT_FILE="$1"
+            shift
+            ;;
+        -m32)
+            M32_FLAG="-m32"
+            shift
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            usage 1
+            ;;
+        *)
+            if [ -n "$INPUT_FILE" ]; then
+                echo "Error: Multiple input files specified" >&2
+                exit 1
+            fi
+            INPUT_FILE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Validate arguments
+if [ -z "$INPUT_FILE" ]; then
+    echo "Error: No input file specified" >&2
+    usage 1
+fi
+
+if [ -z "$OUTPUT_FILE" ]; then
+    echo "Error: No output file specified (use -o)" >&2
+    usage 1
+fi
+
+if [ ! -f "$INPUT_FILE" ]; then
+    echo "Error: Input file not found: $INPUT_FILE" >&2
+    exit 1
+fi
+
+# Compile JavaScript to bytecode
+# --no-column: Omit column numbers in debug info (saves space)
+"$MQJS" --no-column $M32_FLAG -o "$OUTPUT_FILE" "$INPUT_FILE"
+
+echo "Compiled: $INPUT_FILE -> $OUTPUT_FILE"

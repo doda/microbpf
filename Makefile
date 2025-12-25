@@ -426,6 +426,11 @@ test-mqjs: $(MQJS)
 	@echo "Bytecode generated: $(BUILD_DIR)/test.qjbc"
 	@ls -la $(BUILD_DIR)/test.qjbc
 
+# Run toolchain compile tests
+test-toolchain-compile: $(MQJS)
+	@echo "Running toolchain compile tests..."
+	./tests/test_toolchain_compile.sh
+
 # Clean
 clean:
 	rm -rf $(BUILD_DIR)
