@@ -108,6 +108,16 @@ typedef struct mbpf_ring_buffer_map {
 } mbpf_ring_buffer_map_t;
 
 /*
+ * Counter map storage for atomic 64-bit counters.
+ * Provides atomic add/get operations on an array of 64-bit counters.
+ * Optimized for counting use cases (stats, metrics, etc.).
+ */
+typedef struct mbpf_counter_map {
+    uint32_t max_entries;       /* Maximum number of counters */
+    int64_t *counters;          /* Array of 64-bit counters */
+} mbpf_counter_map_t;
+
+/*
  * Generic map storage container.
  */
 typedef struct mbpf_map_storage {
@@ -120,6 +130,7 @@ typedef struct mbpf_map_storage {
         mbpf_percpu_array_map_t percpu_array;
         mbpf_percpu_hash_map_t percpu_hash;
         mbpf_ring_buffer_map_t ring;
+        mbpf_counter_map_t counter;
     } u;
 } mbpf_map_storage_t;
 
@@ -360,6 +371,15 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             if (!ring->buffer) {
                 goto cleanup;
             }
+        } else if (effective_type == MBPF_MAP_TYPE_COUNTER) {
+            /* Counter map: allocate array of 64-bit counters.
+             * max_entries specifies number of counters. */
+            mbpf_counter_map_t *ctr = &storage->u.counter;
+            ctr->max_entries = def->max_entries;
+            ctr->counters = calloc(ctr->max_entries, sizeof(int64_t));
+            if (!ctr->counters) {
+                goto cleanup;
+            }
         }
     }
 
@@ -397,6 +417,8 @@ cleanup:
             free(pch->counts);
         } else if (storage->type == MBPF_MAP_TYPE_RING) {
             free(storage->u.ring.buffer);
+        } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
+            free(storage->u.counter.counters);
         }
     }
     free(prog->maps);
@@ -441,6 +463,8 @@ static void free_maps(mbpf_program_t *prog) {
             free(pch->counts);
         } else if (storage->type == MBPF_MAP_TYPE_RING) {
             free(storage->u.ring.buffer);
+        } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
+            free(storage->u.counter.counters);
         }
     }
     free(prog->maps);
@@ -1134,6 +1158,91 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 i, i,
                 ring->buffer_size,
                 ring->max_event_size);
+            p += written;
+            remaining -= written;
+        } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
+            /* Counter map for 64-bit counters with atomic operations.
+             * Uses two arrays:
+             *   - hi[]: high 32 bits of each counter (as Int32Array)
+             *   - lo[]: low 32 bits of each counter (as Uint32Array)
+             *   - dhi[]/dlo[]: accumulated deltas to apply atomically after run
+             *
+             * The actual counter values are stored in C and synced before/after runs.
+             * This ensures atomic operations when multiple instances access the same counter. */
+            mbpf_counter_map_t *ctr = &storage->u.counter;
+
+            /* Create counter storage with high/low arrays and delta tracking */
+            written = snprintf(p, remaining,
+                "_mapData[%u]={hi:new Int32Array(%u),lo:new Uint32Array(%u),"
+                "dhi:new Int32Array(%u),dlo:new Int32Array(%u),sets:[]};"
+                "_mapValid[%u]=%u;",
+                i, ctr->max_entries, ctr->max_entries,
+                ctr->max_entries, ctr->max_entries,
+                i, ctr->max_entries);
+            p += written;
+            remaining -= written;
+
+            /* Create counter map object with add, get, set methods.
+             * add() accumulates delta for atomic application after run.
+             * get() returns current value + accumulated delta.
+             * set() records the new value for post-run assignment. */
+            written = snprintf(p, remaining,
+                "maps['%s']=(function(){"
+                "var d=_mapData[%u];"
+                "var max=%u;"
+                /* Helper: convert 64-bit to hi/lo parts */
+                "function split64(v,hi,lo,idx){"
+                    "if(v>=0){"
+                        "hi[idx]=Math.floor(v/0x100000000)|0;"
+                        "lo[idx]=(v-hi[idx]*0x100000000)|0;"
+                    "}else{"
+                        "hi[idx]=Math.ceil(v/0x100000000)-1|0;"
+                        "lo[idx]=((v-hi[idx]*0x100000000)|0)>>>0;"
+                    "}"
+                "}"
+                /* Helper: combine hi/lo to 64-bit value */
+                "function combine64(hi,lo,idx){"
+                    "return hi[idx]*0x100000000+(lo[idx]>>>0);"
+                "}"
+                "return{"
+                /* add(idx, delta) - accumulate delta for atomic add after run */
+                "add:function(idx,delta){"
+                    "if(typeof idx!=='number'||idx<0||idx>=max)throw new RangeError('index out of bounds');"
+                    "idx=idx>>>0;"
+                    /* Get current accumulated delta and add the new delta */
+                    "var curDelta=combine64(d.dhi,d.dlo,idx);"
+                    "var newDelta=curDelta+delta;"
+                    /* Split back to hi/lo representation */
+                    "split64(newDelta,d.dhi,d.dlo,idx);"
+                    "return true;"
+                "},"
+                /* get(idx) - get current counter value (base + pending delta) */
+                "get:function(idx){"
+                    "if(typeof idx!=='number'||idx<0||idx>=max)throw new RangeError('index out of bounds');"
+                    "idx=idx>>>0;"
+                    /* Combine base value with pending delta */
+                    "var base=combine64(d.hi,d.lo,idx);"
+                    "var delta=combine64(d.dhi,d.dlo,idx);"
+                    "return base+delta;"
+                "},"
+                /* set(idx, value) - record value for post-run assignment */
+                "set:function(idx,value){"
+                    "if(typeof idx!=='number'||idx<0||idx>=max)throw new RangeError('index out of bounds');"
+                    "idx=idx>>>0;"
+                    /* Record set operation (will be applied atomically) */
+                    "d.sets.push({i:idx,v:value});"
+                    /* Also update local view */
+                    "split64(value,d.hi,d.lo,idx);"
+                    /* Clear any pending delta for this index */
+                    "d.dhi[idx]=0;"
+                    "d.dlo[idx]=0;"
+                    "return true;"
+                "}"
+                "};"
+                "})();",
+                storage->name,
+                i,
+                ctr->max_entries);
             p += written;
             remaining -= written;
         }
@@ -2738,6 +2847,42 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
                     free(data_code);
                 }
             }
+        } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
+            /* Sync counter values from C to JS before running.
+             * Read current C values atomically and update JS hi/lo arrays.
+             * Also clear the delta accumulators for this run. */
+            mbpf_counter_map_t *ctr = &storage->u.counter;
+
+            /* Build sync code to update JS arrays with current C values.
+             * Each entry can be up to ~100 bytes, so allocate 128 per entry + header. */
+            size_t code_size = (size_t)ctr->max_entries * 128 + 256;
+            char *sync_code = malloc(code_size);
+            if (sync_code) {
+                char *p = sync_code;
+                size_t remaining = code_size;
+                int written = snprintf(p, remaining, "(function(){var d=_mapData[%u];", i);
+                p += written;
+                remaining -= (size_t)written;
+                for (uint32_t j = 0; j < ctr->max_entries && remaining > 128; j++) {
+                    /* Read atomically from C storage */
+                    int64_t val = __atomic_load_n(&ctr->counters[j], __ATOMIC_SEQ_CST);
+                    int32_t hi = (int32_t)(val >> 32);
+                    uint32_t lo = (uint32_t)(val & 0xFFFFFFFFLL);
+                    written = snprintf(p, remaining, "d.hi[%u]=%d;d.lo[%u]=%u;d.dhi[%u]=0;d.dlo[%u]=0;",
+                                 j, hi, j, lo, j, j);
+                    p += written;
+                    remaining -= (size_t)written;
+                }
+                /* Clear sets array */
+                snprintf(p, remaining, "d.sets=[];})()");
+
+                JSValue sync_result = JS_Eval(ctx, sync_code, strlen(sync_code),
+                                              "<counter_sync_in>", JS_EVAL_RETVAL);
+                if (JS_IsException(sync_result)) {
+                    JS_GetException(ctx);
+                }
+                free(sync_code);
+            }
         }
     }
 
@@ -2853,6 +2998,72 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
                     }
                 }
                 /* JSValues managed by GC, no manual free needed */
+            }
+        } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
+            /* Sync counter deltas and sets from JS to C storage atomically.
+             * First apply any set() operations, then apply add() deltas. */
+            mbpf_counter_map_t *ctr = &storage->u.counter;
+
+            /* Get sets array and deltas from JS */
+            char sync_code[512];
+            snprintf(sync_code, sizeof(sync_code),
+                "(function(){"
+                    "var d=_mapData[%u];"
+                    "var r={sets:d.sets.slice(),dhi:[],dlo:[]};"
+                    "for(var i=0;i<%u;i++){r.dhi.push(d.dhi[i]);r.dlo.push(d.dlo[i]);}"
+                    "return r;"
+                "})()", i, ctr->max_entries);
+
+            JSValue sync_result = JS_Eval(ctx, sync_code, strlen(sync_code),
+                                          "<counter_sync_out>", JS_EVAL_RETVAL);
+            if (!JS_IsException(sync_result)) {
+                /* Process set operations first (they override any pending deltas) */
+                JSValue sets_array = JS_GetPropertyStr(ctx, sync_result, "sets");
+                JSValue sets_len_val = JS_GetPropertyStr(ctx, sets_array, "length");
+                int32_t sets_len = 0;
+                JS_ToInt32(ctx, &sets_len, sets_len_val);
+
+                for (int32_t j = 0; j < sets_len; j++) {
+                    JSValue set_obj = JS_GetPropertyUint32(ctx, sets_array, (uint32_t)j);
+                    JSValue idx_val = JS_GetPropertyStr(ctx, set_obj, "i");
+                    JSValue val_val = JS_GetPropertyStr(ctx, set_obj, "v");
+
+                    int32_t idx = 0;
+                    JS_ToInt32(ctx, &idx, idx_val);
+
+                    /* Get the value as a double and convert to int64 */
+                    double dval = 0;
+                    JS_ToNumber(ctx, &dval, val_val);
+                    int64_t new_val = (int64_t)dval;
+
+                    if (idx >= 0 && (uint32_t)idx < ctr->max_entries) {
+                        /* Atomically store the new value */
+                        __atomic_store_n(&ctr->counters[idx], new_val, __ATOMIC_SEQ_CST);
+                    }
+                }
+
+                /* Process delta additions atomically */
+                JSValue dhi_array = JS_GetPropertyStr(ctx, sync_result, "dhi");
+                JSValue dlo_array = JS_GetPropertyStr(ctx, sync_result, "dlo");
+
+                for (uint32_t j = 0; j < ctr->max_entries; j++) {
+                    JSValue dhi_val = JS_GetPropertyUint32(ctx, dhi_array, j);
+                    JSValue dlo_val = JS_GetPropertyUint32(ctx, dlo_array, j);
+
+                    int32_t dhi = 0, dlo = 0;
+                    JS_ToInt32(ctx, &dhi, dhi_val);
+                    JS_ToInt32(ctx, &dlo, dlo_val);
+
+                    /* Combine hi/lo into 64-bit delta */
+                    int64_t delta = ((int64_t)dhi << 32) | ((uint32_t)dlo);
+
+                    if (delta != 0) {
+                        /* Atomically add delta to counter */
+                        __atomic_fetch_add(&ctr->counters[j], delta, __ATOMIC_SEQ_CST);
+                    }
+                }
+            } else {
+                JS_GetException(ctx);
             }
         }
     }

@@ -491,7 +491,7 @@
       "Verify 64-bit counters work correctly",
       "Verify concurrent updates don't lose counts"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-iteration",

@@ -350,6 +350,16 @@ if [ -f build/test_map_type_validation ]; then
     fi
 fi
 
+# Run counter map tests
+if [ -f build/test_counter_map ]; then
+    ./build/test_counter_map
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Counter map tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
