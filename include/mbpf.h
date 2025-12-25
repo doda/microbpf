@@ -107,6 +107,7 @@ typedef enum {
     MBPF_ERR_MAP_INCOMPATIBLE   = -23,  /* Map schema changed and policy requires preservation */
     MBPF_ERR_STILL_ATTACHED     = -24,  /* Program still attached, cannot update */
     MBPF_ERR_API_VERSION        = -25,  /* Helper API version incompatible */
+    MBPF_ERR_HELPER_VERSION     = -26,  /* Per-helper version incompatible */
 } mbpf_error_t;
 
 /* Capabilities */

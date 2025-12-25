@@ -773,7 +773,7 @@
       "Verify each helper version is checked against runtime",
       "Verify incompatible helper version causes load rejection"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "typed-array-shim",

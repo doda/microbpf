@@ -22,6 +22,83 @@ extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
 extern void mbpf_set_log_context(void *log_fn, int debug_mode);
 extern void mbpf_clear_log_context(void);
 
+/*
+ * Per-helper version registry.
+ * Each helper has its own version (major<<16 | minor) for fine-grained
+ * versioning when evolving individual helpers independently.
+ * Programs can specify required helper versions in the manifest's
+ * helper_versions map. The loader enforces: major must match exactly,
+ * runtime minor must be >= program's required minor.
+ */
+typedef struct {
+    const char *name;
+    uint32_t version;  /* major<<16 | minor */
+} mbpf_helper_version_entry_t;
+
+/* Current helper versions - all helpers start at 0.1 */
+#define MBPF_HELPER_VERSION_0_1 ((0 << 16) | 1)
+
+static const mbpf_helper_version_entry_t mbpf_helper_versions[] = {
+    { "log",         MBPF_HELPER_VERSION_0_1 },
+    { "u64LoadLE",   MBPF_HELPER_VERSION_0_1 },
+    { "u64StoreLE",  MBPF_HELPER_VERSION_0_1 },
+    { "nowNs",       MBPF_HELPER_VERSION_0_1 },
+    { "emit",        MBPF_HELPER_VERSION_0_1 },
+    { "stats",       MBPF_HELPER_VERSION_0_1 },
+    { "mapLookup",   MBPF_HELPER_VERSION_0_1 },
+    { "mapUpdate",   MBPF_HELPER_VERSION_0_1 },
+    { "mapDelete",   MBPF_HELPER_VERSION_0_1 },
+    { NULL, 0 }  /* Sentinel */
+};
+
+/*
+ * Look up the runtime version of a helper by name.
+ * Returns the version (major<<16 | minor) or 0 if not found.
+ */
+static uint32_t get_helper_version(const char *name) {
+    for (const mbpf_helper_version_entry_t *e = mbpf_helper_versions; e->name; e++) {
+        if (strcmp(e->name, name) == 0) {
+            return e->version;
+        }
+    }
+    return 0;  /* Unknown helper */
+}
+
+/*
+ * Check if a program's helper_versions are compatible with the runtime.
+ * Returns 0 if compatible, -1 if incompatible.
+ *
+ * Rules (same as API version):
+ * - Major versions must match exactly
+ * - Runtime minor must be >= program's required minor
+ * - Unknown helpers in the manifest cause rejection
+ */
+static int check_helper_versions(const mbpf_manifest_t *manifest) {
+    for (uint32_t i = 0; i < manifest->helper_version_count; i++) {
+        const char *name = manifest->helper_versions[i].name;
+        uint32_t prog_ver = manifest->helper_versions[i].version;
+
+        uint32_t runtime_ver = get_helper_version(name);
+        if (runtime_ver == 0) {
+            /* Unknown helper - reject */
+            return -1;
+        }
+
+        uint16_t prog_major = (uint16_t)(prog_ver >> 16);
+        uint16_t prog_minor = (uint16_t)(prog_ver & 0xFFFF);
+        uint16_t runtime_major = (uint16_t)(runtime_ver >> 16);
+        uint16_t runtime_minor = (uint16_t)(runtime_ver & 0xFFFF);
+
+        if (prog_major != runtime_major) {
+            return -1;
+        }
+        if (prog_minor > runtime_minor) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* Forward declarations for static functions used across the file */
 struct mbpf_instance;
 static void call_mbpf_fini_on_instance(struct mbpf_instance *inst);
@@ -2998,6 +3075,18 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
         mbpf_manifest_free(&prog->manifest);
         free(prog);
         return MBPF_ERR_API_VERSION;
+    }
+
+    /* Validate per-helper versions if specified (§11.5, §12.3):
+     * - Major versions must match exactly
+     * - Runtime minor must be >= program's required minor
+     * - Unknown helpers cause rejection */
+    if (prog->manifest.helper_version_count > 0) {
+        if (check_helper_versions(&prog->manifest) != 0) {
+            mbpf_manifest_free(&prog->manifest);
+            free(prog);
+            return MBPF_ERR_HELPER_VERSION;
+        }
     }
 
     /* Validate heap_size is at least the platform minimum */
