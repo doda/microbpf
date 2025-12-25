@@ -785,7 +785,7 @@
       "Implement u8array_data(val) - verify returns valid pointer",
       "Verify pointer is ephemeral (valid only until next allocation)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "allocation-free-helpers",

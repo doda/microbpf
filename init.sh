@@ -450,6 +450,16 @@ if [ -f build/test_failure_isolation ]; then
     fi
 fi
 
+# Run typed array shim tests
+if [ -f build/test_typed_array_shim ]; then
+    ./build/test_typed_array_shim
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Typed array shim tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."
