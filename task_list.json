@@ -871,7 +871,7 @@
       "Verify maps.myarray object exists with lookup/update methods",
       "Verify maps.myhash object exists with lookup/update/delete methods"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "global-console-debug",
