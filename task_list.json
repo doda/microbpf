@@ -1015,7 +1015,7 @@
       "Send packet with first byte 0xFF - verify dropped",
       "Send packet with different first byte - verify passed"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "u64-representation",
