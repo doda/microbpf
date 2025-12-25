@@ -477,6 +477,32 @@ static void free_maps(mbpf_program_t *prog) {
 }
 
 /*
+ * Create the 'mbpf' global object for a JS context.
+ * This object provides helper functions and properties:
+ * - apiVersion: Runtime API version encoded as (major << 16) | minor
+ */
+static int setup_mbpf_object(JSContext *ctx) {
+    /* Build JS code to create mbpf object with apiVersion property */
+    char code[256];
+    uint32_t api_version = MBPF_API_VERSION;
+    snprintf(code, sizeof(code),
+        "(function(){"
+        "globalThis.mbpf={"
+        "apiVersion:%u"
+        "};"
+        "})()",
+        api_version);
+
+    JSValue result = JS_Eval(ctx, code, strlen(code), "<mbpf>", JS_EVAL_RETVAL);
+    if (JS_IsException(result)) {
+        JS_GetException(ctx);
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
  * Create the 'maps' global object for a JS context.
  * Each map is exposed as a property with lookup/update methods.
  * For per-CPU maps, instance_idx selects the CPU-local storage.
@@ -2168,9 +2194,10 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
     /* Store bc_info from bytecode for reference */
     mbpf_bytecode_check(prog->bytecode, prog->bytecode_len, &prog->bc_info);
 
-    /* Set up maps object in each instance's JS context */
+    /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
-        if (setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
+        if (setup_mbpf_object(prog->instances[i].js_ctx) != 0 ||
+            setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
             }
@@ -3073,9 +3100,10 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
     /* Update bc_info */
     mbpf_bytecode_check(prog->bytecode, prog->bytecode_len, &prog->bc_info);
 
-    /* Set up maps object in each instance's JS context */
+    /* Set up mbpf and maps objects in each instance's JS context */
     for (uint32_t i = 0; i < prog->instance_count; i++) {
-        if (setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
+        if (setup_mbpf_object(prog->instances[i].js_ctx) != 0 ||
+            setup_maps_object(prog->instances[i].js_ctx, prog, i) != 0) {
             for (uint32_t j = 0; j < prog->instance_count; j++) {
                 free_instance(&prog->instances[j]);
             }

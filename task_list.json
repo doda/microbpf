@@ -540,7 +540,7 @@
       "Verify value is number encoded as major<<16|minor",
       "Verify value matches runtime's API version"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "helper-log",

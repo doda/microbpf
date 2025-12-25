@@ -68,3 +68,4 @@ exception-handling: reviewed exception defaults and tests
 - 2025-12-24: Completed map-iteration review with nextKey support and tests.
 - 2025-12-24: Completed map-persistence review with program update map preservation and tests.
 - 2025-12-24: Completed map-concurrency review with concurrency tests and build integration.
+- 2025-12-24: Completed helper-api-version review with mbpf.apiVersion support and tests.
