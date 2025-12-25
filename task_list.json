@@ -1002,7 +1002,7 @@
       "Load on little-endian runtime - verify works",
       "Verify endianness mismatch is rejected"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "example-net-rx-filter",
