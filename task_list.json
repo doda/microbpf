@@ -821,7 +821,7 @@
       "Verify worker context drains queue and executes program",
       "Verify queue has fixed maximum depth"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "deferred-execution-backpressure",

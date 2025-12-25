@@ -6193,3 +6193,317 @@ int mbpf_program_circuit_reset(mbpf_program_t *prog) {
     prog->consecutive_failures = 0;
     return MBPF_OK;
 }
+
+/*
+ * Deferred Execution Queue Implementation
+ *
+ * Supports deferring observer hook invocations (TRACEPOINT, TIMER) to a
+ * worker context. Decision hooks (NET_RX, NET_TX, SECURITY) must run inline.
+ */
+
+/* Maximum context size we can store in a single invocation entry */
+#define MBPF_DEFERRED_MAX_CTX_SIZE 4096
+
+/* A single queued invocation */
+typedef struct mbpf_deferred_entry {
+    mbpf_runtime_t *runtime;
+    mbpf_hook_id_t hook;
+    mbpf_hook_type_t hook_type;
+
+    /* Snapshotted context union - supports TRACEPOINT and TIMER */
+    union {
+        mbpf_ctx_tracepoint_v1_t tracepoint;
+        mbpf_ctx_timer_v1_t timer;
+    } ctx;
+
+    /* Snapshotted data buffer (for TRACEPOINT with data) */
+    uint8_t *data_snapshot;
+    uint32_t data_snapshot_len;
+    uint16_t flags;             /* MBPF_CTX_F_TRUNCATED if truncated */
+} mbpf_deferred_entry_t;
+
+/* The deferred queue itself */
+struct mbpf_deferred_queue {
+    mbpf_deferred_entry_t *entries;
+    uint32_t max_entries;
+    uint32_t max_snapshot_bytes;
+    volatile uint32_t head;     /* Next write position */
+    volatile uint32_t tail;     /* Next read position */
+    volatile uint32_t count;    /* Number of pending entries */
+    volatile uint64_t dropped;  /* Dropped invocations counter */
+};
+
+bool mbpf_hook_can_defer(mbpf_hook_type_t hook_type) {
+    switch (hook_type) {
+    case MBPF_HOOK_TRACEPOINT:
+    case MBPF_HOOK_TIMER:
+        return true;
+    case MBPF_HOOK_NET_RX:
+    case MBPF_HOOK_NET_TX:
+    case MBPF_HOOK_SECURITY:
+    case MBPF_HOOK_CUSTOM:
+        return false;
+    default:
+        return false;
+    }
+}
+
+mbpf_deferred_queue_t *mbpf_deferred_queue_create(const mbpf_deferred_config_t *cfg) {
+    if (!cfg || cfg->max_entries == 0) {
+        return NULL;
+    }
+
+    mbpf_deferred_queue_t *queue = malloc(sizeof(mbpf_deferred_queue_t));
+    if (!queue) {
+        return NULL;
+    }
+
+    queue->entries = calloc(cfg->max_entries, sizeof(mbpf_deferred_entry_t));
+    if (!queue->entries) {
+        free(queue);
+        return NULL;
+    }
+
+    queue->max_entries = cfg->max_entries;
+    queue->max_snapshot_bytes = cfg->max_snapshot_bytes > 0 ?
+                                cfg->max_snapshot_bytes :
+                                MBPF_DEFERRED_MAX_CTX_SIZE;
+    queue->head = 0;
+    queue->tail = 0;
+    queue->count = 0;
+    queue->dropped = 0;
+
+    return queue;
+}
+
+void mbpf_deferred_queue_destroy(mbpf_deferred_queue_t *queue) {
+    if (!queue) {
+        return;
+    }
+
+    /* Free any snapshot buffers still in the queue */
+    if (queue->entries) {
+        for (uint32_t i = 0; i < queue->max_entries; i++) {
+            if (queue->entries[i].data_snapshot) {
+                free(queue->entries[i].data_snapshot);
+            }
+        }
+        free(queue->entries);
+    }
+
+    free(queue);
+}
+
+/*
+ * Snapshot context for deferred execution.
+ * Copies scalar fields and optionally data buffer.
+ */
+static int snapshot_context(mbpf_deferred_entry_t *entry,
+                            mbpf_hook_type_t hook_type,
+                            const void *ctx_blob, size_t ctx_len,
+                            uint32_t max_snapshot_bytes) {
+    entry->hook_type = hook_type;
+    entry->flags = 0;
+
+    switch (hook_type) {
+    case MBPF_HOOK_TRACEPOINT: {
+        if (ctx_len < sizeof(mbpf_ctx_tracepoint_v1_t)) {
+            return MBPF_ERR_INVALID_ARG;
+        }
+        const mbpf_ctx_tracepoint_v1_t *src =
+            (const mbpf_ctx_tracepoint_v1_t *)ctx_blob;
+
+        /* Copy scalar fields */
+        entry->ctx.tracepoint.abi_version = src->abi_version;
+        entry->ctx.tracepoint.tracepoint_id = src->tracepoint_id;
+        entry->ctx.tracepoint.timestamp = src->timestamp;
+        entry->ctx.tracepoint.cpu = src->cpu;
+        entry->ctx.tracepoint.pid = src->pid;
+        entry->ctx.tracepoint.flags = src->flags;
+        entry->ctx.tracepoint.reserved = src->reserved;
+        entry->ctx.tracepoint.read_fn = NULL;  /* Can't use original read_fn */
+
+        /* Snapshot data buffer if present (direct or via read_fn). */
+        uint32_t data_len = src->data_len;
+        if (data_len > 0 && (src->data || src->read_fn)) {
+            uint32_t copy_len = data_len;
+            if (copy_len > max_snapshot_bytes) {
+                copy_len = max_snapshot_bytes;
+                entry->flags |= MBPF_CTX_F_TRUNCATED;
+            }
+
+            entry->data_snapshot = malloc(copy_len);
+            if (!entry->data_snapshot) {
+                entry->data_snapshot_len = 0;
+                entry->ctx.tracepoint.data_len = 0;
+                entry->ctx.tracepoint.data = NULL;
+                return MBPF_ERR_NO_MEM;
+            }
+
+            if (src->data) {
+                memcpy(entry->data_snapshot, src->data, copy_len);
+            } else {
+                int read_rc = src->read_fn(ctx_blob, 0, copy_len,
+                                           entry->data_snapshot);
+                if (read_rc <= 0) {
+                    free(entry->data_snapshot);
+                    entry->data_snapshot = NULL;
+                    entry->data_snapshot_len = 0;
+                    entry->ctx.tracepoint.data_len = 0;
+                    entry->ctx.tracepoint.data = NULL;
+                    entry->flags &= ~MBPF_CTX_F_TRUNCATED;
+                    copy_len = 0;
+                } else if ((uint32_t)read_rc < copy_len) {
+                    copy_len = (uint32_t)read_rc;
+                    if (copy_len < data_len) {
+                        entry->flags |= MBPF_CTX_F_TRUNCATED;
+                    }
+                }
+            }
+
+            if (entry->data_snapshot) {
+                entry->data_snapshot_len = copy_len;
+                entry->ctx.tracepoint.data_len = copy_len;
+                entry->ctx.tracepoint.data = entry->data_snapshot;
+            }
+        } else {
+            entry->data_snapshot = NULL;
+            entry->data_snapshot_len = 0;
+            entry->ctx.tracepoint.data_len = 0;
+            entry->ctx.tracepoint.data = NULL;
+        }
+        entry->ctx.tracepoint.flags |= entry->flags;
+        break;
+    }
+
+    case MBPF_HOOK_TIMER: {
+        if (ctx_len < sizeof(mbpf_ctx_timer_v1_t)) {
+            return MBPF_ERR_INVALID_ARG;
+        }
+        const mbpf_ctx_timer_v1_t *src =
+            (const mbpf_ctx_timer_v1_t *)ctx_blob;
+
+        /* TIMER contexts have no data buffer - just copy scalars */
+        entry->ctx.timer = *src;
+        entry->data_snapshot = NULL;
+        entry->data_snapshot_len = 0;
+        break;
+    }
+
+    default:
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    return MBPF_OK;
+}
+
+int mbpf_queue_invocation(mbpf_deferred_queue_t *queue,
+                          mbpf_runtime_t *rt,
+                          mbpf_hook_id_t hook,
+                          mbpf_hook_type_t hook_type,
+                          const void *ctx_blob, size_t ctx_len) {
+    if (!queue || !rt || !ctx_blob || ctx_len == 0) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Only observer hooks can be deferred */
+    if (!mbpf_hook_can_defer(hook_type)) {
+        return MBPF_ERR_INVALID_ARG;
+    }
+
+    /* Check if queue is full */
+    if (queue->count >= queue->max_entries) {
+        __atomic_add_fetch(&queue->dropped, 1, __ATOMIC_RELAXED);
+        return MBPF_ERR_NO_MEM;
+    }
+
+    /* Get next write position */
+    uint32_t pos = queue->head % queue->max_entries;
+    mbpf_deferred_entry_t *entry = &queue->entries[pos];
+
+    /* Free any previous snapshot buffer */
+    if (entry->data_snapshot) {
+        free(entry->data_snapshot);
+        entry->data_snapshot = NULL;
+    }
+
+    /* Snapshot the context */
+    int err = snapshot_context(entry, hook_type, ctx_blob, ctx_len,
+                               queue->max_snapshot_bytes);
+    if (err != MBPF_OK) {
+        return err;
+    }
+
+    /* Fill in remaining fields */
+    entry->runtime = rt;
+    entry->hook = hook;
+
+    /* Atomically increment head and count */
+    __atomic_add_fetch(&queue->head, 1, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&queue->count, 1, __ATOMIC_RELEASE);
+
+    return MBPF_OK;
+}
+
+int mbpf_drain_deferred(mbpf_deferred_queue_t *queue) {
+    if (!queue) {
+        return -1;
+    }
+
+    int executed = 0;
+
+    while (queue->count > 0) {
+        uint32_t pos = queue->tail % queue->max_entries;
+        mbpf_deferred_entry_t *entry = &queue->entries[pos];
+
+        /* Execute the program via mbpf_run */
+        int32_t out_rc;
+        void *ctx_blob = NULL;
+        size_t ctx_len = 0;
+
+        switch (entry->hook_type) {
+        case MBPF_HOOK_TRACEPOINT:
+            ctx_blob = &entry->ctx.tracepoint;
+            ctx_len = sizeof(entry->ctx.tracepoint);
+            break;
+        case MBPF_HOOK_TIMER:
+            ctx_blob = &entry->ctx.timer;
+            ctx_len = sizeof(entry->ctx.timer);
+            break;
+        default:
+            /* Should not happen - skip this entry */
+            goto next_entry;
+        }
+
+        /* Execute the hook */
+        mbpf_run(entry->runtime, entry->hook, ctx_blob, ctx_len, &out_rc);
+        executed++;
+
+    next_entry:
+        /* Free snapshot buffer */
+        if (entry->data_snapshot) {
+            free(entry->data_snapshot);
+            entry->data_snapshot = NULL;
+        }
+
+        /* Atomically decrement count and advance tail */
+        __atomic_add_fetch(&queue->tail, 1, __ATOMIC_RELEASE);
+        __atomic_sub_fetch(&queue->count, 1, __ATOMIC_RELEASE);
+    }
+
+    return executed;
+}
+
+uint32_t mbpf_deferred_pending(const mbpf_deferred_queue_t *queue) {
+    if (!queue) {
+        return 0;
+    }
+    return __atomic_load_n(&queue->count, __ATOMIC_ACQUIRE);
+}
+
+uint64_t mbpf_deferred_dropped(const mbpf_deferred_queue_t *queue) {
+    if (!queue) {
+        return 0;
+    }
+    return __atomic_load_n(&queue->dropped, __ATOMIC_ACQUIRE);
+}

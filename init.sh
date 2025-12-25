@@ -480,6 +480,16 @@ if [ -f build/test_gc_reference ]; then
     fi
 fi
 
+# Run deferred execution queue tests
+if [ -f build/test_deferred_queue ]; then
+    ./build/test_deferred_queue
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Deferred execution queue tests failed"
+        exit 1
+    fi
+fi
+
 # Test MQuickJS bytecode compilation
 echo ""
 echo "Testing bytecode compilation..."

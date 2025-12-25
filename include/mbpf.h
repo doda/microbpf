@@ -406,6 +406,69 @@ bool mbpf_program_circuit_open(mbpf_program_t *prog);
  * and allowing the program to run again. Returns MBPF_OK on success. */
 int mbpf_program_circuit_reset(mbpf_program_t *prog);
 
+/*
+ * Deferred Execution Queue API
+ *
+ * Observer hooks (TRACEPOINT, TIMER) can optionally run in deferred mode.
+ * This allows hook providers to return immediately without blocking.
+ *
+ * The queue has a fixed maximum depth; when full, invocations are dropped
+ * (not blocking) and a per-hook drop counter is incremented.
+ */
+
+/* Deferred queue handle (opaque) */
+typedef struct mbpf_deferred_queue mbpf_deferred_queue_t;
+
+/* Deferred queue configuration */
+typedef struct mbpf_deferred_config {
+    uint32_t max_entries;           /* Maximum queue depth (must be > 0) */
+    uint32_t max_snapshot_bytes;    /* Maximum bytes to snapshot per invocation */
+} mbpf_deferred_config_t;
+
+/* Create a deferred execution queue.
+ * Returns NULL on failure (invalid config or allocation failure).
+ * The queue must be destroyed with mbpf_deferred_queue_destroy(). */
+mbpf_deferred_queue_t *mbpf_deferred_queue_create(const mbpf_deferred_config_t *cfg);
+
+/* Destroy a deferred queue and free all resources.
+ * Safe to call with NULL. */
+void mbpf_deferred_queue_destroy(mbpf_deferred_queue_t *queue);
+
+/* Queue an invocation for deferred execution.
+ * The context is snapshotted immediately; the original context can be
+ * freed after this call returns.
+ *
+ * Returns:
+ *   MBPF_OK - Invocation queued successfully
+ *   MBPF_ERR_NO_MEM - Queue is full (invocation dropped, counter incremented)
+ *   MBPF_ERR_INVALID_ARG - Invalid arguments or hook type not deferrable
+ *
+ * Only observer hooks (TRACEPOINT, TIMER) can be deferred. Passing a
+ * decision hook (NET_RX, NET_TX, SECURITY) returns MBPF_ERR_INVALID_ARG.
+ */
+int mbpf_queue_invocation(mbpf_deferred_queue_t *queue,
+                          mbpf_runtime_t *rt,
+                          mbpf_hook_id_t hook,
+                          mbpf_hook_type_t hook_type,
+                          const void *ctx_blob, size_t ctx_len);
+
+/* Drain and execute all pending invocations in the queue.
+ * This should be called from a worker context (thread, timer, tasklet).
+ *
+ * Returns the number of invocations executed, or -1 on error.
+ * Execution uses the normal mbpf_run path internally. */
+int mbpf_drain_deferred(mbpf_deferred_queue_t *queue);
+
+/* Get the current number of pending invocations in the queue. */
+uint32_t mbpf_deferred_pending(const mbpf_deferred_queue_t *queue);
+
+/* Get the number of invocations that have been dropped due to queue full. */
+uint64_t mbpf_deferred_dropped(const mbpf_deferred_queue_t *queue);
+
+/* Check if a hook type supports deferred execution.
+ * Returns true for observer hooks (TRACEPOINT, TIMER), false otherwise. */
+bool mbpf_hook_can_defer(mbpf_hook_type_t hook_type);
+
 #ifdef __cplusplus
 }
 #endif
