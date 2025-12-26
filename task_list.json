@@ -1147,7 +1147,7 @@
       "Load, attach, run, detach, unload",
       "Verify expected behavior at each step"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-integration-maps",

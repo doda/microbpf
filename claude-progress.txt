@@ -119,3 +119,4 @@ toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL 
 2025-12-26 test-unit-package-parser: reviewed package parser unit tests.
 2025-12-26 test-unit-map-operations: reviewed map operations unit tests.
 2025-12-26 test-unit-budget-enforcement: reviewed budget enforcement unit tests.
+2025-12-26 test-integration-load-run: reviewed integration load/run cycle tests.
