@@ -210,6 +210,16 @@ if [ -f build/test_unit_package_parser ]; then
     fi
 fi
 
+# Run unit map operations tests
+if [ -f build/test_unit_map_operations ]; then
+    ./build/test_unit_map_operations
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Unit map operations tests failed"
+        exit 1
+    fi
+fi
+
 # Run program unload tests
 if [ -f build/test_program_unload ]; then
     ./build/test_program_unload

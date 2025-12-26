@@ -1125,7 +1125,7 @@
       "Test hash map operations",
       "Test edge cases and error conditions"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-unit-budget-enforcement",
