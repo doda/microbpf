@@ -220,6 +220,16 @@ if [ -f build/test_unit_map_operations ]; then
     fi
 fi
 
+# Run unit budget enforcement tests
+if [ -f build/test_unit_budget_enforcement ]; then
+    ./build/test_unit_budget_enforcement
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Unit budget enforcement tests failed"
+        exit 1
+    fi
+fi
+
 # Run program unload tests
 if [ -f build/test_program_unload ]; then
     ./build/test_program_unload

@@ -1136,7 +1136,7 @@
       "Test helper count enforcement",
       "Test wall-time enforcement if supported"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-integration-load-run",
