@@ -498,6 +498,155 @@ TEST(bounds_overflow) {
     return 0;
 }
 
+/* Test 23: Section offset exceeds file length */
+TEST(offset_exceeds_file_len) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Section with offset well beyond file size */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 1000, 10, 0);
+
+    mbpf_section_desc_t sections[1];
+    uint32_t count;
+    int err = mbpf_package_parse_section_table(buf, 256, sections, 1, &count);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
+/* Test 24: Section length exceeds remaining space */
+TEST(length_exceeds_remaining) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Section starts at valid offset but length is too large */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 100, 200, 0);
+    /* offset=100 is valid, but 100 + 200 = 300 > 256 */
+
+    mbpf_section_desc_t sections[1];
+    uint32_t count;
+    int err = mbpf_package_parse_section_table(buf, 256, sections, 1, &count);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
+/* Test 25: Wrapped offset that would pass naive check */
+TEST(wrapped_offset_overflow) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Maximum offset - would wrap to small value if added to any length */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 0xFFFFFFFF, 1, 0);
+    /* 0xFFFFFFFF + 1 = 0 in 32-bit arithmetic */
+
+    mbpf_section_desc_t sections[1];
+    uint32_t count;
+    int err = mbpf_package_parse_section_table(buf, 256, sections, 1, &count);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
+/* Test 26: Wrapped length that would pass naive check */
+TEST(wrapped_length_overflow) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Small offset but huge length that wraps around */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 100, 0xFFFFFF00, 0);
+    /* 100 + 0xFFFFFF00 = 0x100000064, wraps to 0x64 (100) in 32-bit */
+
+    mbpf_section_desc_t sections[1];
+    uint32_t count;
+    int err = mbpf_package_parse_section_table(buf, 256, sections, 1, &count);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
+/* Test 27: mbpf_package_get_section with wrapped offset */
+TEST(get_section_wrapped_offset) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Section with wrapped offset */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 0xFFFFFFF0, 0x20, 0);
+
+    const void *sec_data;
+    size_t sec_len;
+    int err = mbpf_package_get_section(buf, 256, MBPF_SEC_MANIFEST,
+                                        &sec_data, &sec_len);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
+/* Test 28: mbpf_package_get_section with offset > file size */
+TEST(get_section_offset_too_large) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Section with offset beyond file */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 500, 10, 0);
+
+    const void *sec_data;
+    size_t sec_len;
+    int err = mbpf_package_get_section(buf, 256, MBPF_SEC_MANIFEST,
+                                        &sec_data, &sec_len);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
+/* Test 29: mbpf_package_get_section with length > remaining */
+TEST(get_section_length_too_large) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Section at valid offset but length extends past end */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 200, 100, 0);
+
+    const void *sec_data;
+    size_t sec_len;
+    int err = mbpf_package_get_section(buf, 256, MBPF_SEC_MANIFEST,
+                                        &sec_data, &sec_len);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
+/* Test 30: Both offset and length at max values */
+TEST(both_max_values) {
+    uint8_t buf[256];
+    size_t hdr_size = create_mbpf_header(buf, sizeof(buf), 1);
+    ASSERT(hdr_size > 0);
+
+    /* Both at maximum values */
+    add_section_desc(buf, 0, MBPF_SEC_MANIFEST, 0xFFFFFFFF, 0xFFFFFFFF, 0);
+
+    mbpf_section_desc_t sections[1];
+    uint32_t count;
+    int err = mbpf_package_parse_section_table(buf, 256, sections, 1, &count);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    /* Also test get_section */
+    const void *sec_data;
+    size_t sec_len;
+    err = mbpf_package_get_section(buf, 256, MBPF_SEC_MANIFEST,
+                                    &sec_data, &sec_len);
+    ASSERT_EQ(err, MBPF_ERR_SECTION_BOUNDS);
+
+    return 0;
+}
+
 /* Test 21: Use mbpf_package_get_section with parsed sections */
 TEST(get_section_after_parse) {
     uint8_t buf[512];
@@ -590,6 +739,14 @@ int main(void) {
     RUN_TEST(validate_section_bounds);
     RUN_TEST(validate_section_bounds_exact);
     RUN_TEST(bounds_overflow);
+    RUN_TEST(offset_exceeds_file_len);
+    RUN_TEST(length_exceeds_remaining);
+    RUN_TEST(wrapped_offset_overflow);
+    RUN_TEST(wrapped_length_overflow);
+    RUN_TEST(get_section_wrapped_offset);
+    RUN_TEST(get_section_offset_too_large);
+    RUN_TEST(get_section_length_too_large);
+    RUN_TEST(both_max_values);
 
     /* Overlap detection */
     RUN_TEST(detect_overlapping_sections);

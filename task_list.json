@@ -1225,7 +1225,7 @@
       "Apply overflow-safe checks in mbpf_package_get_section and section table parsing",
       "Add tests with wrapped offsets/lengths to confirm rejection"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-allocation-overflow",

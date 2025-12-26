@@ -87,9 +87,17 @@ int mbpf_package_parse_header(const void *data, size_t len,
         return MBPF_ERR_UNSUPPORTED_VER;
     }
 
-    /* Validate header size */
+    /*
+     * Validate header size with overflow-safe checks.
+     * The section table size is section_count * sizeof(mbpf_section_desc_t).
+     * To prevent overflow, check that section_count doesn't exceed a safe maximum.
+     */
+    size_t max_sections = (SIZE_MAX - sizeof(mbpf_file_header_t)) / sizeof(mbpf_section_desc_t);
+    if (out_header->section_count > max_sections) {
+        return MBPF_ERR_INVALID_PACKAGE;
+    }
     size_t expected_size = sizeof(mbpf_file_header_t) +
-                           out_header->section_count * sizeof(mbpf_section_desc_t);
+                           (size_t)out_header->section_count * sizeof(mbpf_section_desc_t);
     if (out_header->header_size < expected_size || out_header->header_size > len) {
         return MBPF_ERR_INVALID_PACKAGE;
     }
@@ -168,9 +176,17 @@ int mbpf_package_parse_section_table(const void *data, size_t len,
         const uint8_t *sec = section_table + i * sizeof(mbpf_section_desc_t);
         read_section_desc(sec, &out_sections[i]);
 
-        /* Validate section bounds */
-        uint64_t end = (uint64_t)out_sections[i].offset + out_sections[i].length;
-        if (end > len) {
+        /*
+         * Validate section bounds with overflow-safe checks.
+         * We check: sec_offset + sec_length <= len
+         * Rewritten as two checks to avoid integer overflow:
+         * 1. sec_offset must not exceed len
+         * 2. sec_length must not exceed len - sec_offset
+         */
+        if ((size_t)out_sections[i].offset > len) {
+            return MBPF_ERR_SECTION_BOUNDS;
+        }
+        if ((size_t)out_sections[i].length > len - (size_t)out_sections[i].offset) {
             return MBPF_ERR_SECTION_BOUNDS;
         }
     }
@@ -221,9 +237,18 @@ int mbpf_package_get_section(const void *data, size_t len,
                               ((uint32_t)sec[11] << 24);
 
         if (sec_type == type) {
-            /* Validate bounds */
-            if (sec_offset + sec_length > len) {
-                return MBPF_ERR_INVALID_PACKAGE;
+            /*
+             * Validate bounds using overflow-safe checks.
+             * We check: sec_offset + sec_length <= len
+             * Rewritten as two checks to avoid integer overflow:
+             * 1. sec_offset must not exceed len
+             * 2. sec_length must not exceed len - sec_offset
+             */
+            if ((size_t)sec_offset > len) {
+                return MBPF_ERR_SECTION_BOUNDS;
+            }
+            if ((size_t)sec_length > len - (size_t)sec_offset) {
+                return MBPF_ERR_SECTION_BOUNDS;
             }
 
             *out_data = buf + sec_offset;
