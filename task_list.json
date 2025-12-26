@@ -1169,7 +1169,7 @@
       "Run fuzzer with corpus of valid packages",
       "Fix any crashes or hangs found"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-fuzz-helper-boundary",
