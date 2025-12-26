@@ -1191,7 +1191,7 @@
       "Document configuration options",
       "Include code examples"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "docs-js-api-reference",
