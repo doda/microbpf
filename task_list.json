@@ -1103,7 +1103,7 @@
       "Load program requesting ungrantable capability - verify error",
       "Call helper without required capability - verify exception"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-unit-package-parser",

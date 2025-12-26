@@ -190,6 +190,16 @@ if [ -f build/test_error_hook_mismatch ]; then
     fi
 fi
 
+# Run error capability denied tests
+if [ -f build/test_error_capability_denied ]; then
+    ./build/test_error_capability_denied
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Error capability denied tests failed"
+        exit 1
+    fi
+fi
+
 # Run program unload tests
 if [ -f build/test_program_unload ]; then
     ./build/test_program_unload
