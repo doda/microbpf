@@ -1202,7 +1202,7 @@
       "Document maps API",
       "Document context object per hook type"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "docs-package-format",
