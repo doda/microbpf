@@ -127,3 +127,4 @@ toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL 
 2025-12-26 docs-js-api-reference: reviewed JS API reference doc.
 docs-package-format: documented .mbpf package format for tooling authors.
 2025-12-26 package-section-bounds-overflow: reviewed overflow-safe section bounds checks and tests.
+2025-12-26 map-allocation-overflow: reviewed map allocation overflow checks and tests.

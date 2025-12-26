@@ -125,6 +125,7 @@ TEST_INTEGRATION_LOAD_RUN = $(BUILD_DIR)/test_integration_load_run
 TEST_INTEGRATION_MAPS = $(BUILD_DIR)/test_integration_maps
 TEST_FUZZ_PACKAGE_PARSER = $(BUILD_DIR)/test_fuzz_package_parser
 TEST_FUZZ_HELPER_BOUNDARY = $(BUILD_DIR)/test_fuzz_helper_boundary
+TEST_MAP_ALLOCATION_OVERFLOW = $(BUILD_DIR)/test_map_allocation_overflow
 GENERATE_FUZZ_CORPUS = $(BUILD_DIR)/generate_fuzz_corpus
 CREATE_MBPF = $(BUILD_DIR)/create_mbpf
 MANIFEST_GEN_TOOL = $(BUILD_DIR)/mbpf_manifest_gen
@@ -458,6 +459,9 @@ $(BUILD_DIR)/test_fuzz_package_parser: $(TEST_DIR)/fuzz_package_parser.c $(LIB) 
 	$(CC) $(CFLAGS) -DFUZZ_STANDALONE -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
 $(BUILD_DIR)/test_fuzz_helper_boundary: $(TEST_DIR)/fuzz_helper_boundary.c $(LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
+
+$(BUILD_DIR)/test_map_allocation_overflow: $(TEST_DIR)/test_map_allocation_overflow.c $(LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
 $(BUILD_DIR)/generate_fuzz_corpus: $(TEST_DIR)/generate_fuzz_corpus.c $(LIB) | $(BUILD_DIR)

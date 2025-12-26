@@ -66,6 +66,36 @@ static inline bool seqlock_read_validate(mbpf_seqlock_t *lock, uint32_t seq) {
     return atomic_load_explicit(&lock->sequence, memory_order_relaxed) == seq;
 }
 
+/*
+ * Overflow-safe multiplication for size_t.
+ * Returns true if the multiplication a * b can be performed without overflow.
+ * If safe, stores the result in *out. If overflow would occur, returns false.
+ */
+static inline bool safe_size_mul(size_t a, size_t b, size_t *out) {
+    if (a == 0 || b == 0) {
+        *out = 0;
+        return true;
+    }
+    if (a > SIZE_MAX / b) {
+        return false;
+    }
+    *out = a * b;
+    return true;
+}
+
+/*
+ * Overflow-safe addition for size_t.
+ * Returns true if the addition a + b can be performed without overflow.
+ * If safe, stores the result in *out. If overflow would occur, returns false.
+ */
+static inline bool safe_size_add(size_t a, size_t b, size_t *out) {
+    if (a > SIZE_MAX - b) {
+        return false;
+    }
+    *out = a + b;
+    return true;
+}
+
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
 extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
 
@@ -539,8 +569,12 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             arr->max_entries = def->max_entries;
             arr->value_size = def->value_size;
 
-            /* Allocate value storage */
-            size_t values_size = (size_t)arr->max_entries * arr->value_size;
+            /* Validate allocation size against overflow */
+            size_t values_size;
+            if (!safe_size_mul((size_t)arr->max_entries, (size_t)arr->value_size, &values_size)) {
+                goto cleanup;
+            }
+
             arr->values = calloc(values_size, 1);
             if (!arr->values) {
                 goto cleanup;
@@ -564,9 +598,14 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             hash->value_size = def->value_size;
             hash->count = 0;
 
-            /* Allocate bucket storage: each bucket is [valid:1][key][value] */
-            size_t bucket_size = 1 + hash->key_size + hash->value_size;
-            size_t buckets_size = (size_t)hash->max_entries * bucket_size;
+            /* Allocate bucket storage: each bucket is [valid:1][key][value]
+             * Validate bucket_size and total allocation against overflow */
+            size_t bucket_size, buckets_size;
+            if (!safe_size_add(1, (size_t)hash->key_size, &bucket_size) ||
+                !safe_size_add(bucket_size, (size_t)hash->value_size, &bucket_size) ||
+                !safe_size_mul((size_t)hash->max_entries, bucket_size, &buckets_size)) {
+                goto cleanup;
+            }
             hash->buckets = calloc(buckets_size, 1);
             if (!hash->buckets) {
                 goto cleanup;
@@ -583,9 +622,14 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             lru->lru_head = 0xFFFFFFFF;  /* null */
             lru->lru_tail = 0xFFFFFFFF;  /* null */
 
-            /* Allocate bucket storage: each bucket is [valid:1][prev:4][next:4][key][value] */
-            size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
-            size_t buckets_size = (size_t)lru->max_entries * bucket_size;
+            /* Allocate bucket storage: each bucket is [valid:1][prev:4][next:4][key][value]
+             * Validate bucket_size and total allocation against overflow */
+            size_t bucket_size, buckets_size;
+            if (!safe_size_add(9, (size_t)lru->key_size, &bucket_size) ||  /* 1 + 4 + 4 = 9 */
+                !safe_size_add(bucket_size, (size_t)lru->value_size, &bucket_size) ||
+                !safe_size_mul((size_t)lru->max_entries, bucket_size, &buckets_size)) {
+                goto cleanup;
+            }
             lru->buckets = calloc(buckets_size, 1);
             if (!lru->buckets) {
                 goto cleanup;
@@ -600,6 +644,12 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             pca->value_size = def->value_size;
             pca->num_cpus = num_instances;
 
+            /* Validate per-CPU value array size against overflow before allocation */
+            size_t values_size;
+            if (!safe_size_mul((size_t)pca->max_entries, (size_t)pca->value_size, &values_size)) {
+                goto cleanup;
+            }
+
             /* Allocate arrays of pointers for per-CPU storage */
             pca->values = calloc(num_instances, sizeof(uint8_t *));
             pca->valid = calloc(num_instances, sizeof(uint8_t *));
@@ -612,7 +662,6 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             }
 
             /* Allocate per-CPU value arrays and validity bitmaps */
-            size_t values_size = (size_t)pca->max_entries * pca->value_size;
             size_t bitmap_size = pca->max_entries;  /* One byte per entry for simplicity */
             for (uint32_t cpu = 0; cpu < num_instances; cpu++) {
                 pca->values[cpu] = calloc(values_size, 1);
@@ -638,6 +687,14 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             pch->value_size = def->value_size;
             pch->num_cpus = num_instances;
 
+            /* Validate bucket size against overflow before allocation */
+            size_t bucket_size, buckets_size;
+            if (!safe_size_add(1, (size_t)pch->key_size, &bucket_size) ||
+                !safe_size_add(bucket_size, (size_t)pch->value_size, &bucket_size) ||
+                !safe_size_mul((size_t)pch->max_entries, bucket_size, &buckets_size)) {
+                goto cleanup;
+            }
+
             /* Allocate arrays for per-CPU storage */
             pch->buckets = calloc(num_instances, sizeof(uint8_t *));
             pch->counts = calloc(num_instances, sizeof(uint32_t));
@@ -650,8 +707,6 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             }
 
             /* Allocate per-CPU bucket arrays */
-            size_t bucket_size = 1 + pch->key_size + pch->value_size;
-            size_t buckets_size = (size_t)pch->max_entries * bucket_size;
             for (uint32_t cpu = 0; cpu < num_instances; cpu++) {
                 pch->buckets[cpu] = calloc(buckets_size, 1);
                 if (!pch->buckets[cpu]) {
@@ -670,9 +725,14 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
         } else if (effective_type == MBPF_MAP_TYPE_RING) {
             /* Ring buffer: allocate circular buffer storage.
              * For ring buffers, max_entries * value_size gives total buffer size.
-             * value_size represents the maximum event size. */
+             * value_size represents the maximum event size.
+             * Validate buffer size against overflow before allocation */
             mbpf_ring_buffer_map_t *ring = &storage->u.ring;
-            ring->buffer_size = def->max_entries * def->value_size;
+            size_t buffer_size;
+            if (!safe_size_mul((size_t)def->max_entries, (size_t)def->value_size, &buffer_size)) {
+                goto cleanup;
+            }
+            ring->buffer_size = buffer_size;
             if (ring->buffer_size < 64) {
                 ring->buffer_size = 64;  /* Minimum 64 bytes */
             }
@@ -688,10 +748,15 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             }
         } else if (effective_type == MBPF_MAP_TYPE_COUNTER) {
             /* Counter map: allocate array of 64-bit counters.
-             * max_entries specifies number of counters. */
+             * max_entries specifies number of counters.
+             * Validate allocation size against overflow */
             mbpf_counter_map_t *ctr = &storage->u.counter;
             ctr->max_entries = def->max_entries;
-            ctr->counters = calloc(ctr->max_entries, sizeof(int64_t));
+            size_t counters_size;
+            if (!safe_size_mul((size_t)ctr->max_entries, sizeof(int64_t), &counters_size)) {
+                goto cleanup;
+            }
+            ctr->counters = calloc(counters_size, 1);
             if (!ctr->counters) {
                 goto cleanup;
             }
@@ -4341,10 +4406,12 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
             new_arr->max_entries = new_def->max_entries;
             new_arr->value_size = old_arr->value_size;
 
-            size_t new_data_size = (size_t)new_def->max_entries * old_arr->value_size;
+            /* Validate allocation size against overflow */
+            size_t new_data_size;
+            if (!safe_size_mul((size_t)new_def->max_entries, (size_t)old_arr->value_size, &new_data_size)) {
+                return -1;
+            }
             size_t new_valid_size = (new_def->max_entries + 7) / 8;
-            size_t old_data_size = (size_t)old_arr->max_entries * old_arr->value_size;
-            size_t old_valid_size = (old_arr->max_entries + 7) / 8;
 
             new_arr->values = calloc(1, new_data_size);
             new_arr->valid = calloc(1, new_valid_size);
@@ -4378,9 +4445,14 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
             new_hash->value_size = old_hash->value_size;
             new_hash->count = 0;  /* Will be recalculated during rehash */
 
-            size_t old_bucket_size = 1 + old_hash->key_size + old_hash->value_size;
+            /* Validate bucket size and total allocation against overflow */
+            size_t old_bucket_size, new_total;
+            if (!safe_size_add(1, (size_t)old_hash->key_size, &old_bucket_size) ||
+                !safe_size_add(old_bucket_size, (size_t)old_hash->value_size, &old_bucket_size) ||
+                !safe_size_mul((size_t)new_def->max_entries, old_bucket_size, &new_total)) {
+                return -1;
+            }
             size_t new_bucket_size = old_bucket_size;
-            size_t new_total = (size_t)new_def->max_entries * new_bucket_size;
 
             new_hash->buckets = calloc(1, new_total);
             if (!new_hash->buckets) {
@@ -4429,10 +4501,15 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
             new_lru->lru_head = 0xFFFFFFFF;
             new_lru->lru_tail = 0xFFFFFFFF;
 
-            /* LRU bucket layout: [valid:1][prev:4][next:4][key][value] */
-            size_t old_bucket_size = 1 + 4 + 4 + old_lru->key_size + old_lru->value_size;
+            /* LRU bucket layout: [valid:1][prev:4][next:4][key][value]
+             * Validate bucket size and total allocation against overflow */
+            size_t old_bucket_size, new_total;
+            if (!safe_size_add(9, (size_t)old_lru->key_size, &old_bucket_size) ||  /* 1 + 4 + 4 = 9 */
+                !safe_size_add(old_bucket_size, (size_t)old_lru->value_size, &old_bucket_size) ||
+                !safe_size_mul((size_t)new_def->max_entries, old_bucket_size, &new_total)) {
+                return -1;
+            }
             size_t new_bucket_size = old_bucket_size;
-            size_t new_total = (size_t)new_def->max_entries * new_bucket_size;
 
             new_lru->buckets = calloc(1, new_total);
             if (!new_lru->buckets) {
@@ -4513,6 +4590,12 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
             new_pca->value_size = old_pca->value_size;
             new_pca->num_cpus = num_instances;
 
+            /* Validate allocation size against overflow */
+            size_t new_data_size;
+            if (!safe_size_mul((size_t)new_def->max_entries, (size_t)old_pca->value_size, &new_data_size)) {
+                return -1;
+            }
+
             new_pca->values = calloc(num_instances, sizeof(uint8_t *));
             new_pca->valid = calloc(num_instances, sizeof(uint8_t *));
             if (!new_pca->values || !new_pca->valid) {
@@ -4520,8 +4603,6 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
                 free(new_pca->valid);
                 return -1;
             }
-
-            size_t new_data_size = (size_t)new_def->max_entries * old_pca->value_size;
             uint32_t copy_entries = old_pca->max_entries < new_def->max_entries ?
                                     old_pca->max_entries : new_def->max_entries;
             size_t copy_data = (size_t)copy_entries * old_pca->value_size;
@@ -4557,9 +4638,14 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
             new_pch->value_size = old_pch->value_size;
             new_pch->num_cpus = num_instances;
 
-            size_t old_bucket_size = 1 + old_pch->key_size + old_pch->value_size;
+            /* Validate bucket size and total allocation against overflow */
+            size_t old_bucket_size, new_total;
+            if (!safe_size_add(1, (size_t)old_pch->key_size, &old_bucket_size) ||
+                !safe_size_add(old_bucket_size, (size_t)old_pch->value_size, &old_bucket_size) ||
+                !safe_size_mul((size_t)new_def->max_entries, old_bucket_size, &new_total)) {
+                return -1;
+            }
             size_t new_bucket_size = old_bucket_size;
-            size_t new_total = (size_t)new_def->max_entries * new_bucket_size;
 
             new_pch->buckets = calloc(num_instances, sizeof(uint8_t *));
             new_pch->counts = calloc(num_instances, sizeof(uint32_t));
@@ -4637,7 +4723,13 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
 
             new_cnt->max_entries = new_def->max_entries;
 
-            new_cnt->counters = calloc(new_def->max_entries, sizeof(int64_t));
+            /* Validate allocation size against overflow */
+            size_t counters_size;
+            if (!safe_size_mul((size_t)new_def->max_entries, sizeof(int64_t), &counters_size)) {
+                return -1;
+            }
+
+            new_cnt->counters = calloc(counters_size, 1);
             if (!new_cnt->counters) {
                 return -1;
             }

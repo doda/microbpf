@@ -1237,7 +1237,7 @@
       "Cover array, hash, LRU, and per-CPU map allocations",
       "Add tests with large map sizes to verify safe failure paths"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "runtime-js-codegen-sizing",
