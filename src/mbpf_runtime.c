@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <pthread.h>
 
 /*
  * Maximum size for ring buffer JS sync operations.
@@ -393,6 +394,10 @@ static void call_mbpf_fini_on_instance(struct mbpf_instance *inst);
  *
  * Lock-free reads are supported via a seqlock. Readers check the sequence
  * before and after reading; if it changed or is odd, they retry.
+ *
+ * Writers are serialized via a mutex to prevent concurrent write races.
+ * The write path acquires the mutex, then uses seqlock_write_begin/end
+ * to signal to readers that a write is in progress.
  */
 typedef struct mbpf_array_map {
     uint32_t max_entries;       /* Maximum number of entries */
@@ -400,6 +405,7 @@ typedef struct mbpf_array_map {
     uint8_t *values;            /* Flat array: max_entries * value_size bytes */
     uint8_t *valid;             /* Bitmap: (max_entries + 7) / 8 bytes */
     mbpf_seqlock_t seqlock;     /* Seqlock for lock-free reads */
+    pthread_mutex_t writer_lock; /* Mutex to serialize writers */
 } mbpf_array_map_t;
 
 /*
@@ -409,6 +415,8 @@ typedef struct mbpf_array_map {
  *
  * Lock-free reads are supported via a seqlock. Readers check the sequence
  * before and after reading; if it changed or is odd, they retry.
+ *
+ * Writers are serialized via a mutex to prevent concurrent write races.
  */
 typedef struct mbpf_hash_map {
     uint32_t max_entries;       /* Maximum number of entries */
@@ -418,6 +426,7 @@ typedef struct mbpf_hash_map {
     uint8_t *buckets;           /* Bucket array: max_entries * (1 + key_size + value_size) bytes */
                                 /* Each bucket: [valid:1][key:key_size][value:value_size] */
     mbpf_seqlock_t seqlock;     /* Seqlock for lock-free reads */
+    pthread_mutex_t writer_lock; /* Mutex to serialize writers */
 } mbpf_hash_map_t;
 
 /*
@@ -434,6 +443,8 @@ typedef struct mbpf_hash_map {
  *
  * Lock-free reads are supported via a seqlock. Readers check the sequence
  * before and after reading; if it changed or is odd, they retry.
+ *
+ * Writers are serialized via a mutex to prevent concurrent write races.
  */
 typedef struct mbpf_lru_hash_map {
     uint32_t max_entries;       /* Maximum number of entries */
@@ -444,6 +455,7 @@ typedef struct mbpf_lru_hash_map {
     uint32_t lru_tail;          /* Index of least recently used (tail of list) */
     uint8_t *buckets;           /* Bucket array: max_entries * (1 + 4 + 4 + key_size + value_size) bytes */
     mbpf_seqlock_t seqlock;     /* Seqlock for lock-free reads */
+    pthread_mutex_t writer_lock; /* Mutex to serialize writers */
 } mbpf_lru_hash_map_t;
 
 /*
@@ -793,6 +805,8 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
 
             /* Initialize seqlock for lock-free reads */
             seqlock_init(&arr->seqlock);
+            /* Initialize writer lock for serializing concurrent writers */
+            pthread_mutex_init(&arr->writer_lock, NULL);
         } else if (effective_type == MBPF_MAP_TYPE_HASH) {
             mbpf_hash_map_t *hash = &storage->u.hash;
             hash->max_entries = def->max_entries;
@@ -815,6 +829,8 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
 
             /* Initialize seqlock for lock-free reads */
             seqlock_init(&hash->seqlock);
+            /* Initialize writer lock for serializing concurrent writers */
+            pthread_mutex_init(&hash->writer_lock, NULL);
         } else if (effective_type == MBPF_MAP_TYPE_LRU) {
             mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
             lru->max_entries = def->max_entries;
@@ -839,6 +855,8 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
 
             /* Initialize seqlock for lock-free reads */
             seqlock_init(&lru->seqlock);
+            /* Initialize writer lock for serializing concurrent writers */
+            pthread_mutex_init(&lru->writer_lock, NULL);
         } else if (effective_type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
             /* Per-CPU array: allocate separate storage for each CPU */
             mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
@@ -975,11 +993,20 @@ cleanup:
     for (uint32_t j = 0; j < prog->map_count; j++) {
         mbpf_map_storage_t *storage = &prog->maps[j];
         if (storage->type == MBPF_MAP_TYPE_ARRAY) {
+            if (storage->u.array.values || storage->u.array.valid) {
+                pthread_mutex_destroy(&storage->u.array.writer_lock);
+            }
             free(storage->u.array.values);
             free(storage->u.array.valid);
         } else if (storage->type == MBPF_MAP_TYPE_HASH) {
+            if (storage->u.hash.buckets) {
+                pthread_mutex_destroy(&storage->u.hash.writer_lock);
+            }
             free(storage->u.hash.buckets);
         } else if (storage->type == MBPF_MAP_TYPE_LRU) {
+            if (storage->u.lru_hash.buckets) {
+                pthread_mutex_destroy(&storage->u.lru_hash.writer_lock);
+            }
             free(storage->u.lru_hash.buckets);
         } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
             mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
@@ -1021,11 +1048,14 @@ static void free_maps(mbpf_program_t *prog) {
     for (uint32_t i = 0; i < prog->map_count; i++) {
         mbpf_map_storage_t *storage = &prog->maps[i];
         if (storage->type == MBPF_MAP_TYPE_ARRAY) {
+            pthread_mutex_destroy(&storage->u.array.writer_lock);
             free(storage->u.array.values);
             free(storage->u.array.valid);
         } else if (storage->type == MBPF_MAP_TYPE_HASH) {
+            pthread_mutex_destroy(&storage->u.hash.writer_lock);
             free(storage->u.hash.buckets);
         } else if (storage->type == MBPF_MAP_TYPE_LRU) {
+            pthread_mutex_destroy(&storage->u.lru_hash.writer_lock);
             free(storage->u.lru_hash.buckets);
         } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
             mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
@@ -4580,6 +4610,7 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
                     new_arr->valid[j / 8] |= (1 << (j % 8));
                 }
             }
+            pthread_mutex_init(&new_arr->writer_lock, NULL);
             break;
         }
 
@@ -4634,6 +4665,7 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
                     }
                 }
             }
+            pthread_mutex_init(&new_hash->writer_lock, NULL);
             break;
         }
 
@@ -4773,6 +4805,7 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
                     memcpy(new_pca->valid[cpu], old_pca->valid[cpu], copy_entries);
                 }
             }
+            pthread_mutex_init(&new_lru->writer_lock, NULL);
             break;
         }
 
@@ -5172,11 +5205,14 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
                         /* Free already-allocated new maps */
                         mbpf_map_storage_t *s = &prog->maps[k];
                         if (s->type == MBPF_MAP_TYPE_ARRAY) {
+                            pthread_mutex_destroy(&s->u.array.writer_lock);
                             free(s->u.array.values);
                             free(s->u.array.valid);
                         } else if (s->type == MBPF_MAP_TYPE_HASH) {
+                            pthread_mutex_destroy(&s->u.hash.writer_lock);
                             free(s->u.hash.buckets);
                         } else if (s->type == MBPF_MAP_TYPE_LRU) {
+                            pthread_mutex_destroy(&s->u.lru_hash.writer_lock);
                             free(s->u.lru_hash.buckets);
                         } else if (s->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
                             for (uint32_t cpu = 0; cpu < s->u.percpu_array.num_cpus; cpu++) {
@@ -5216,11 +5252,14 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
         for (uint32_t i = 0; i < old_map_count; i++) {
             mbpf_map_storage_t *storage = &old_maps[i];
             if (storage->type == MBPF_MAP_TYPE_ARRAY && storage->u.array.values) {
+                pthread_mutex_destroy(&storage->u.array.writer_lock);
                 free(storage->u.array.values);
                 free(storage->u.array.valid);
             } else if (storage->type == MBPF_MAP_TYPE_HASH && storage->u.hash.buckets) {
+                pthread_mutex_destroy(&storage->u.hash.writer_lock);
                 free(storage->u.hash.buckets);
             } else if (storage->type == MBPF_MAP_TYPE_LRU && storage->u.lru_hash.buckets) {
+                pthread_mutex_destroy(&storage->u.lru_hash.writer_lock);
                 free(storage->u.lru_hash.buckets);
             } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY && storage->u.percpu_array.values) {
                 for (uint32_t cpu = 0; cpu < storage->u.percpu_array.num_cpus; cpu++) {
@@ -8035,6 +8074,10 @@ int mbpf_lru_map_lookup_lockfree(mbpf_program_t *prog, int map_idx,
  * This function updates an array map entry while holding the seqlock,
  * ensuring that concurrent lock-free reads see consistent data.
  *
+ * Writers are serialized via mutex to prevent concurrent write races.
+ * The sequence is: acquire mutex -> seqlock_write_begin -> modify data ->
+ * seqlock_write_end -> release mutex.
+ *
  * Returns:
  *   0 - Success
  *  -1 - Error (invalid arguments)
@@ -8063,7 +8106,10 @@ int mbpf_array_map_update_locked(mbpf_program_t *prog, int map_idx,
     uint32_t bitmap_byte = index / 8;
     uint8_t bitmap_bit = (uint8_t)(1 << (index % 8));
 
-    /* Acquire seqlock for write */
+    /* Acquire writer lock to serialize concurrent writers */
+    pthread_mutex_lock(&arr->writer_lock);
+
+    /* Acquire seqlock for write (signals readers that write is in progress) */
     seqlock_write_begin(&arr->seqlock);
 
     /* Update value and validity */
@@ -8073,6 +8119,9 @@ int mbpf_array_map_update_locked(mbpf_program_t *prog, int map_idx,
     /* Release seqlock */
     seqlock_write_end(&arr->seqlock);
 
+    /* Release writer lock */
+    pthread_mutex_unlock(&arr->writer_lock);
+
     return 0;
 }
 
@@ -8081,6 +8130,8 @@ int mbpf_array_map_update_locked(mbpf_program_t *prog, int map_idx,
  *
  * This function updates a hash map entry while holding the seqlock,
  * ensuring that concurrent lock-free reads see consistent data.
+ *
+ * Writers are serialized via mutex to prevent concurrent write races.
  *
  * Returns:
  *   0 - Success (inserted or updated)
@@ -8113,7 +8164,10 @@ int mbpf_hash_map_update_locked(mbpf_program_t *prog, int map_idx,
         h *= 16777619u;
     }
 
-    /* Acquire seqlock for write */
+    /* Acquire writer lock to serialize concurrent writers */
+    pthread_mutex_lock(&hash->writer_lock);
+
+    /* Acquire seqlock for write (signals readers that write is in progress) */
     seqlock_write_begin(&hash->seqlock);
 
     int result = -1;
@@ -8163,11 +8217,16 @@ int mbpf_hash_map_update_locked(mbpf_program_t *prog, int map_idx,
     /* Release seqlock */
     seqlock_write_end(&hash->seqlock);
 
+    /* Release writer lock */
+    pthread_mutex_unlock(&hash->writer_lock);
+
     return result;
 }
 
 /*
  * Hash map delete with seqlock protection.
+ *
+ * Writers are serialized via mutex to prevent concurrent write races.
  *
  * Returns:
  *   0 - Success (key deleted)
@@ -8199,7 +8258,10 @@ int mbpf_hash_map_delete_locked(mbpf_program_t *prog, int map_idx,
         h *= 16777619u;
     }
 
-    /* Acquire seqlock for write */
+    /* Acquire writer lock to serialize concurrent writers */
+    pthread_mutex_lock(&hash->writer_lock);
+
+    /* Acquire seqlock for write (signals readers that write is in progress) */
     seqlock_write_begin(&hash->seqlock);
 
     int result = 1;  /* Not found */
@@ -8229,6 +8291,9 @@ int mbpf_hash_map_delete_locked(mbpf_program_t *prog, int map_idx,
 
     /* Release seqlock */
     seqlock_write_end(&hash->seqlock);
+
+    /* Release writer lock */
+    pthread_mutex_unlock(&hash->writer_lock);
 
     return result;
 }
