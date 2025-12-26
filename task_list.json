@@ -1273,7 +1273,7 @@
       "Consider chunked updates or direct buffer copying",
       "Add tests for large ring buffers and sync behavior"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "map-write-concurrency",

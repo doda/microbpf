@@ -130,3 +130,4 @@ docs-package-format: documented .mbpf package format for tooling authors.
 2025-12-26 map-allocation-overflow: reviewed map allocation overflow checks and tests.
 2025-12-26 runtime-js-codegen-sizing: reviewed JS codegen sizing resilience and tests.
 2025-12-26 runtime-map-name-escaping: reviewed map name validation/escaping and tests.
+2025-12-26 ring-buffer-sync-bounds: reviewed ring buffer sync bounds, chunking, and size validation.

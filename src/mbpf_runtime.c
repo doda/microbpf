@@ -18,6 +18,13 @@
 #include <stdatomic.h>
 
 /*
+ * Maximum size for ring buffer JS sync operations.
+ * Limits JS string generation to prevent excessive memory allocation.
+ * Sync uses chunked updates for buffers larger than this.
+ */
+#define MBPF_RING_SYNC_MAX_CHUNK  (64 * 1024)  /* 64KB max per sync chunk */
+
+/*
  * Sequence lock for lock-free map reads.
  *
  * This implements a seqlock pattern that allows:
@@ -927,7 +934,10 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             if (!safe_size_mul((size_t)def->max_entries, (size_t)def->value_size, &buffer_size)) {
                 goto cleanup;
             }
-            ring->buffer_size = buffer_size;
+            if (buffer_size > UINT32_MAX) {
+                goto cleanup;
+            }
+            ring->buffer_size = (uint32_t)buffer_size;
             if (ring->buffer_size < 64) {
                 ring->buffer_size = 64;  /* Minimum 64 bytes */
             }
@@ -4841,12 +4851,26 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
             mbpf_ring_buffer_map_t *new_ring = &new_storage->u.ring;
             const mbpf_ring_buffer_map_t *old_ring = &old_storage->u.ring;
 
-            new_ring->buffer_size = new_def->max_entries;
+            /* Validate buffer size against overflow: buffer_size = max_entries * value_size */
+            size_t buffer_size;
+            if (!safe_size_mul((size_t)new_def->max_entries, (size_t)new_def->value_size, &buffer_size)) {
+                return -1;
+            }
+            if (buffer_size > UINT32_MAX) {
+                return -1;
+            }
+            if (buffer_size < 64) {
+                buffer_size = 64;  /* Minimum 64 bytes */
+            }
+
+            new_ring->buffer_size = (uint32_t)buffer_size;
             new_ring->max_event_size = old_ring->max_event_size;
             new_ring->head = 0;
             new_ring->tail = 0;
+            new_ring->dropped = 0;
+            new_ring->event_count = 0;
 
-            new_ring->buffer = calloc(1, new_def->max_entries);
+            new_ring->buffer = calloc(1, buffer_size);
             if (!new_ring->buffer) {
                 return -1;
             }
@@ -6404,26 +6428,59 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
             }
             /* JSValue managed by GC, no manual free needed */
 
-            /* Copy data buffer from C to JS.
-             * Each "d[N]=V;" is up to 15 chars, plus 256 for overhead. */
-            if (ring->buffer_size > 0) {
-                size_t code_size = (size_t)ring->buffer_size * 16 + 256;
-                char *data_code = malloc(code_size);
-                if (data_code) {
+            /* Copy data buffer from C to JS using chunked updates.
+             * Only sync bytes that contain event data (between tail and head).
+             * Use MBPF_RING_SYNC_MAX_CHUNK to limit JS string size per chunk.
+             * Each "d[N]=V;" is up to 15 chars, so ~4K bytes per chunk at ~16 chars each. */
+            if (ring->buffer_size > 0 && ring->event_count > 0) {
+                /* Calculate bytes used in the ring buffer */
+                uint32_t bytes_used;
+                if (ring->head >= ring->tail) {
+                    bytes_used = ring->head - ring->tail;
+                } else {
+                    bytes_used = ring->buffer_size - ring->tail + ring->head;
+                }
+
+                /* Limit sync to actual used bytes, capped at buffer size */
+                if (bytes_used > ring->buffer_size) {
+                    bytes_used = ring->buffer_size;
+                }
+
+                /* Calculate bytes per chunk (leave room for JS overhead) */
+                uint32_t bytes_per_chunk = MBPF_RING_SYNC_MAX_CHUNK / 16;
+                if (bytes_per_chunk < 256) bytes_per_chunk = 256;
+
+                /* Sync in chunks starting from tail */
+                uint32_t synced = 0;
+                while (synced < bytes_used) {
+                    uint32_t chunk_size = bytes_used - synced;
+                    if (chunk_size > bytes_per_chunk) {
+                        chunk_size = bytes_per_chunk;
+                    }
+
+                    /* Allocate buffer for this chunk: 16 chars per byte + overhead */
+                    size_t code_size = (size_t)chunk_size * 16 + 256;
+                    char *data_code = malloc(code_size);
+                    if (!data_code) break;
+
                     char *p = data_code;
-                    char *end = data_code + code_size - 32;  /* Leave room */
+                    char *end = data_code + code_size - 32;
                     p += sprintf(p, "(function(){var d=_mapData[%u];", i);
-                    for (uint32_t j = 0; j < ring->buffer_size && p < end; j++) {
-                        p += sprintf(p, "d[%u]=%u;", j, ring->buffer[j]);
+
+                    for (uint32_t j = 0; j < chunk_size && p < end; j++) {
+                        uint32_t idx = (ring->tail + synced + j) % ring->buffer_size;
+                        p += sprintf(p, "d[%u]=%u;", idx, ring->buffer[idx]);
                     }
                     p += sprintf(p, "})()");
+
                     JSValue data_result = JS_Eval(ctx, data_code, strlen(data_code),
                                                    "<ring_data_in>", JS_EVAL_RETVAL);
                     if (JS_IsException(data_result)) {
-                        JS_GetException(ctx);  /* Clear exception state */
+                        JS_GetException(ctx);
                     }
-                    /* JSValue managed by GC, no manual free needed */
                     free(data_code);
+
+                    synced += chunk_size;
                 }
             }
         } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
@@ -6697,61 +6754,84 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
                    prog->manifest.program_name, *out_rc);
 
     /* Sync ring buffer state from JS to C storage.
-     * This allows host-side APIs to read events written by the program. */
+     * This allows host-side APIs to read events written by the program.
+     * Use direct property access instead of building large arrays. */
     for (uint32_t i = 0; i < prog->map_count; i++) {
         mbpf_map_storage_t *storage = &prog->maps[i];
         if (storage->type == MBPF_MAP_TYPE_RING) {
             mbpf_ring_buffer_map_t *ring = &storage->u.ring;
 
-            /* Get the ring buffer metadata and data from JS.
-             * Returns a flat array: [head, tail, dropped, eventCount, data...] */
-            char sync_code[512];
+            /* Get the ring buffer metadata from JS first */
+            char sync_code[256];
             snprintf(sync_code, sizeof(sync_code),
                 "(function(){"
                     "var m=_mapValid[%u];"
-                    "var d=_mapData[%u];"
-                    "var r=[m.head,m.tail,m.dropped,m.eventCount];"
-                    "for(var i=0;i<d.length;i++)r.push(d[i]);"
-                    "return r;"
-                "})()", i, i);
+                    "return [m.head,m.tail,m.dropped,m.eventCount];"
+                "})()", i);
 
-            JSValue sync_result = JS_Eval(ctx, sync_code, strlen(sync_code),
-                                          "<ring_sync>", JS_EVAL_RETVAL);
-            if (JS_IsException(sync_result)) {
-                JS_GetException(ctx);  /* Clear exception state */
-            } else {
-                JSValue v_len = JS_GetPropertyStr(ctx, sync_result, "length");
-                int32_t len = 0;
-                if (JS_ToInt32(ctx, &len, v_len) == 0 && len >= 4) {
-                    int32_t head = 0, tail = 0, dropped = 0, event_count = 0;
+            JSValue meta_result = JS_Eval(ctx, sync_code, strlen(sync_code),
+                                          "<ring_meta>", JS_EVAL_RETVAL);
+            if (JS_IsException(meta_result)) {
+                JS_GetException(ctx);
+                continue;
+            }
 
-                    JSValue v0 = JS_GetPropertyUint32(ctx, sync_result, 0);
-                    JSValue v1 = JS_GetPropertyUint32(ctx, sync_result, 1);
-                    JSValue v2 = JS_GetPropertyUint32(ctx, sync_result, 2);
-                    JSValue v3 = JS_GetPropertyUint32(ctx, sync_result, 3);
+            int32_t head = 0, tail = 0, dropped = 0, event_count = 0;
+            JSValue v0 = JS_GetPropertyUint32(ctx, meta_result, 0);
+            JSValue v1 = JS_GetPropertyUint32(ctx, meta_result, 1);
+            JSValue v2 = JS_GetPropertyUint32(ctx, meta_result, 2);
+            JSValue v3 = JS_GetPropertyUint32(ctx, meta_result, 3);
 
-                    JS_ToInt32(ctx, &head, v0);
-                    JS_ToInt32(ctx, &tail, v1);
-                    JS_ToInt32(ctx, &dropped, v2);
-                    JS_ToInt32(ctx, &event_count, v3);
+            JS_ToInt32(ctx, &head, v0);
+            JS_ToInt32(ctx, &tail, v1);
+            JS_ToInt32(ctx, &dropped, v2);
+            JS_ToInt32(ctx, &event_count, v3);
 
-                    /* JSValues managed by GC, no manual free needed */
+            ring->head = (uint32_t)head;
+            ring->tail = (uint32_t)tail;
+            ring->dropped = (uint32_t)dropped;
+            ring->event_count = (uint32_t)event_count;
 
-                    ring->head = (uint32_t)head;
-                    ring->tail = (uint32_t)tail;
-                    ring->dropped = (uint32_t)dropped;
-                    ring->event_count = (uint32_t)event_count;
-
-                    /* Copy data bytes (starting at index 4) */
-                    for (int32_t j = 4; j < len && (uint32_t)(j - 4) < ring->buffer_size; j++) {
-                        JSValue elem = JS_GetPropertyUint32(ctx, sync_result, (uint32_t)j);
-                        int32_t byte_val = 0;
-                        JS_ToInt32(ctx, &byte_val, elem);
-                        ring->buffer[j - 4] = (uint8_t)byte_val;
-                        /* JSValue managed by GC */
+            /* Copy used data bytes directly from JS Uint8Array.
+             * Only sync bytes between tail and head to avoid large allocations. */
+            if (event_count > 0 && ring->buffer_size > 0) {
+                /* Get the data array object */
+                char get_data_code[64];
+                snprintf(get_data_code, sizeof(get_data_code), "_mapData[%u]", i);
+                JSValue data_arr = JS_Eval(ctx, get_data_code, strlen(get_data_code),
+                                            "<ring_data>", JS_EVAL_RETVAL);
+                if (!JS_IsException(data_arr)) {
+                    /* Calculate bytes used */
+                    uint32_t bytes_used;
+                    if ((uint32_t)head >= (uint32_t)tail) {
+                        bytes_used = (uint32_t)head - (uint32_t)tail;
+                    } else {
+                        bytes_used = ring->buffer_size - (uint32_t)tail + (uint32_t)head;
                     }
+                    if (bytes_used > ring->buffer_size) {
+                        bytes_used = ring->buffer_size;
+                    }
+
+                    /* Copy bytes in chunks to avoid too many property accesses */
+                    uint32_t synced = 0;
+                    while (synced < bytes_used) {
+                        uint32_t chunk_size = bytes_used - synced;
+                        if (chunk_size > MBPF_RING_SYNC_MAX_CHUNK) {
+                            chunk_size = MBPF_RING_SYNC_MAX_CHUNK;
+                        }
+
+                        for (uint32_t j = 0; j < chunk_size; j++) {
+                            uint32_t idx = ((uint32_t)tail + synced + j) % ring->buffer_size;
+                            JSValue elem = JS_GetPropertyUint32(ctx, data_arr, idx);
+                            int32_t byte_val = 0;
+                            JS_ToInt32(ctx, &byte_val, elem);
+                            ring->buffer[idx] = (uint8_t)byte_val;
+                        }
+                        synced += chunk_size;
+                    }
+                } else {
+                    JS_GetException(ctx);
                 }
-                /* JSValues managed by GC, no manual free needed */
             }
         } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
             /* Sync counter deltas and sets from JS to C storage atomically.
