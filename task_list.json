@@ -1214,5 +1214,77 @@
       "Document signing procedure"
     ],
     "passes": true
+  },
+  {
+    "id": "package-section-bounds-overflow",
+    "category": "security",
+    "description": "Harden section bounds checks against integer overflow",
+    "steps": [
+      "Reject section descriptors when sec_offset exceeds file length",
+      "Reject sections when sec_length is larger than len - sec_offset",
+      "Apply overflow-safe checks in mbpf_package_get_section and section table parsing",
+      "Add tests with wrapped offsets/lengths to confirm rejection"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-allocation-overflow",
+    "category": "security",
+    "description": "Add overflow checks for map storage allocation sizing",
+    "steps": [
+      "Validate max_entries * value_size and bucket_size multiplications against size_t overflow",
+      "Reject map definitions that exceed size limits before allocation",
+      "Cover array, hash, LRU, and per-CPU map allocations",
+      "Add tests with large map sizes to verify safe failure paths"
+    ],
+    "passes": false
+  },
+  {
+    "id": "runtime-js-codegen-sizing",
+    "category": "functional",
+    "description": "Make JS code generation resilient to size estimation errors",
+    "steps": [
+      "Check snprintf return values for truncation and handle growth",
+      "Avoid remaining underflow when estimates are short",
+      "Cover maps object and low-level map helper code paths",
+      "Add tests with long map names and high map counts"
+    ],
+    "passes": false
+  },
+  {
+    "id": "runtime-map-name-escaping",
+    "category": "security",
+    "description": "Escape or validate map names used in generated JS",
+    "steps": [
+      "Define escaping for quotes, backslashes, and control characters",
+      "Apply escaping when embedding map names into JS code",
+      "Consider rejecting invalid names at manifest parse time",
+      "Add tests with malicious or malformed map names"
+    ],
+    "passes": false
+  },
+  {
+    "id": "ring-buffer-sync-bounds",
+    "category": "security",
+    "description": "Safeguard ring buffer sync code generation and sizing",
+    "steps": [
+      "Validate ring buffer size calculations for overflow",
+      "Avoid building excessively large JS strings for sync",
+      "Consider chunked updates or direct buffer copying",
+      "Add tests for large ring buffers and sync behavior"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-write-concurrency",
+    "category": "functional",
+    "description": "Serialize map writers or document single-writer guarantees",
+    "steps": [
+      "Add per-map writer synchronization or explicit single-writer enforcement",
+      "Ensure seqlock writers cannot race with each other",
+      "Update hash/array/LRU write paths accordingly",
+      "Add concurrent writer tests to validate behavior"
+    ],
+    "passes": false
   }
 ]
