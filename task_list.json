@@ -1083,7 +1083,7 @@
       "Load package with wrong magic - verify error code returned",
       "Verify error messages are informative"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "error-hook-mismatch",

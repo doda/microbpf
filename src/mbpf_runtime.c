@@ -6716,6 +6716,69 @@ uint32_t mbpf_api_version(void) {
     return MBPF_API_VERSION;
 }
 
+const char *mbpf_error_string(mbpf_error_t err) {
+    switch (err) {
+        case MBPF_OK:
+            return "success";
+        case MBPF_ERR_INVALID_ARG:
+            return "invalid argument";
+        case MBPF_ERR_NO_MEM:
+            return "out of memory";
+        case MBPF_ERR_INVALID_PACKAGE:
+            return "invalid package format";
+        case MBPF_ERR_INVALID_MAGIC:
+            return "invalid magic number (expected 0x4D425046)";
+        case MBPF_ERR_UNSUPPORTED_VER:
+            return "unsupported package format version";
+        case MBPF_ERR_MISSING_SECTION:
+            return "required section missing";
+        case MBPF_ERR_INVALID_BYTECODE:
+            return "invalid or incompatible bytecode";
+        case MBPF_ERR_HOOK_MISMATCH:
+            return "hook type mismatch";
+        case MBPF_ERR_CAPABILITY_DENIED:
+            return "required capability not granted";
+        case MBPF_ERR_BUDGET_EXCEEDED:
+            return "execution budget exceeded";
+        case MBPF_ERR_ALREADY_ATTACHED:
+            return "program already attached to hook";
+        case MBPF_ERR_NOT_ATTACHED:
+            return "program not attached to hook";
+        case MBPF_ERR_NESTED_EXEC:
+            return "nested execution not allowed";
+        case MBPF_ERR_SIGNATURE:
+            return "signature verification failed";
+        case MBPF_ERR_SECTION_BOUNDS:
+            return "section extends past package end";
+        case MBPF_ERR_SECTION_OVERLAP:
+            return "overlapping sections detected";
+        case MBPF_ERR_CRC_MISMATCH:
+            return "CRC32 checksum mismatch";
+        case MBPF_ERR_HEAP_TOO_SMALL:
+            return "heap size below platform minimum";
+        case MBPF_ERR_ALREADY_UNLOADED:
+            return "program already unloaded";
+        case MBPF_ERR_ABI_MISMATCH:
+            return "hook context ABI version mismatch";
+        case MBPF_ERR_MISSING_ENTRY:
+            return "entry function not found";
+        case MBPF_ERR_INIT_FAILED:
+            return "program initialization failed";
+        case MBPF_ERR_MAP_INCOMPATIBLE:
+            return "map schema incompatible with existing map";
+        case MBPF_ERR_STILL_ATTACHED:
+            return "program still attached";
+        case MBPF_ERR_API_VERSION:
+            return "helper API version incompatible";
+        case MBPF_ERR_HELPER_VERSION:
+            return "per-helper version incompatible";
+        case MBPF_ERR_TARGET_MISMATCH:
+            return "target word size or endianness mismatch";
+        default:
+            return "unknown error";
+    }
+}
+
 /* Runtime target architecture info */
 uint8_t mbpf_runtime_word_size(void) {
     return (uint8_t)(sizeof(void*) * 8);  /* 32 or 64 */

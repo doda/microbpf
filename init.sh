@@ -170,6 +170,16 @@ if [ -f build/test_program_load_validation ]; then
     fi
 fi
 
+# Run error invalid package tests
+if [ -f build/test_error_invalid_package ]; then
+    ./build/test_error_invalid_package
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Error invalid package tests failed"
+        exit 1
+    fi
+fi
+
 # Run program unload tests
 if [ -f build/test_program_unload ]; then
     ./build/test_program_unload

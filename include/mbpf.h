@@ -336,6 +336,9 @@ mbpf_instance_t *mbpf_program_get_instance(mbpf_program_t *prog, uint32_t idx);
 const char *mbpf_version_string(void);
 uint32_t mbpf_api_version(void);
 
+/* Error code to string conversion */
+const char *mbpf_error_string(mbpf_error_t err);
+
 /* Runtime target architecture info */
 uint8_t mbpf_runtime_word_size(void);    /* Returns 32 or 64 */
 uint8_t mbpf_runtime_endianness(void);   /* Returns 0 (little) or 1 (big) */
