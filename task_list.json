@@ -1158,7 +1158,7 @@
       "Verify map data persists",
       "Unload and verify cleanup"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-fuzz-package-parser",
