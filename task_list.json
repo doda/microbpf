@@ -1213,6 +1213,6 @@
       "Document manifest schema",
       "Document signing procedure"
     ],
-    "passes": false
+    "passes": true
   }
 ]

@@ -125,3 +125,4 @@ toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL 
 2025-12-26 test-fuzz-helper-boundary: reviewed helper boundary fuzz harness.
 2025-12-26 docs-api-reference: reviewed and completed C API reference doc.
 2025-12-26 docs-js-api-reference: reviewed JS API reference doc.
+docs-package-format: documented .mbpf package format for tooling authors.
