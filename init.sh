@@ -180,6 +180,16 @@ if [ -f build/test_error_invalid_package ]; then
     fi
 fi
 
+# Run error hook mismatch tests
+if [ -f build/test_error_hook_mismatch ]; then
+    ./build/test_error_hook_mismatch
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Error hook mismatch tests failed"
+        exit 1
+    fi
+fi
+
 # Run program unload tests
 if [ -f build/test_program_unload ]; then
     ./build/test_program_unload

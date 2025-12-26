@@ -1093,7 +1093,7 @@
       "Attach NET_RX program to TIMER hook - verify error",
       "Attach program with wrong context ABI version - verify error"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "error-capability-denied",

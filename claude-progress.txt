@@ -114,3 +114,4 @@ toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL 
 2025-12-26 context-object-reuse: reviewed ctx reuse changes and tests.
 2025-12-26 lock-free-map-reads: reviewed lock-free map read API and tests.
 2025-12-26 error-invalid-package: reviewed invalid package error handling and error string coverage.
+2025-12-26 error-hook-mismatch: reviewed hook mismatch error tests and integration.
