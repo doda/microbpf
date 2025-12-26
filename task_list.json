@@ -1180,7 +1180,7 @@
       "Test with malformed Uint8Arrays, invalid offsets",
       "Fix any crashes found"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "docs-api-reference",

@@ -124,6 +124,7 @@ TEST_UNIT_BUDGET_ENFORCEMENT = $(BUILD_DIR)/test_unit_budget_enforcement
 TEST_INTEGRATION_LOAD_RUN = $(BUILD_DIR)/test_integration_load_run
 TEST_INTEGRATION_MAPS = $(BUILD_DIR)/test_integration_maps
 TEST_FUZZ_PACKAGE_PARSER = $(BUILD_DIR)/test_fuzz_package_parser
+TEST_FUZZ_HELPER_BOUNDARY = $(BUILD_DIR)/test_fuzz_helper_boundary
 GENERATE_FUZZ_CORPUS = $(BUILD_DIR)/generate_fuzz_corpus
 CREATE_MBPF = $(BUILD_DIR)/create_mbpf
 MANIFEST_GEN_TOOL = $(BUILD_DIR)/mbpf_manifest_gen
@@ -456,6 +457,9 @@ $(BUILD_DIR)/test_integration_maps: $(TEST_DIR)/test_integration_maps.c $(LIB) |
 $(BUILD_DIR)/test_fuzz_package_parser: $(TEST_DIR)/fuzz_package_parser.c $(LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -DFUZZ_STANDALONE -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
+$(BUILD_DIR)/test_fuzz_helper_boundary: $(TEST_DIR)/fuzz_helper_boundary.c $(LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
+
 $(BUILD_DIR)/generate_fuzz_corpus: $(TEST_DIR)/generate_fuzz_corpus.c $(LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -o $@ $< -L$(BUILD_DIR) -lmbpf $(LDFLAGS)
 
@@ -545,10 +549,17 @@ test-toolchain-compile: $(MQJS)
 	./tests/test_toolchain_compile.sh
 
 # Fuzz test target (standalone mode - runs synthetic tests)
-.PHONY: test-fuzz test-fuzz-corpus
-test-fuzz: $(TEST_FUZZ_PACKAGE_PARSER)
+.PHONY: test-fuzz test-fuzz-corpus test-fuzz-helpers
+test-fuzz: $(TEST_FUZZ_PACKAGE_PARSER) $(TEST_FUZZ_HELPER_BOUNDARY)
 	@echo "Running package parser fuzz tests..."
 	./$(TEST_FUZZ_PACKAGE_PARSER)
+	@echo ""
+	@echo "Running helper boundary fuzz tests..."
+	./$(TEST_FUZZ_HELPER_BOUNDARY)
+
+test-fuzz-helpers: $(TEST_FUZZ_HELPER_BOUNDARY)
+	@echo "Running helper boundary fuzz tests..."
+	./$(TEST_FUZZ_HELPER_BOUNDARY)
 
 # Generate fuzz corpus and run with corpus files
 test-fuzz-corpus: $(TEST_FUZZ_PACKAGE_PARSER) $(GENERATE_FUZZ_CORPUS)

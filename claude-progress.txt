@@ -122,3 +122,4 @@ toolchain-mbpf-assemble: reviewed mbpf assembly tool, added validation for NULL 
 2025-12-26 test-integration-load-run: reviewed integration load/run cycle tests.
 2025-12-26 test-integration-maps: reviewed integration map persistence tests.
 2025-12-26 test-fuzz-package-parser: reviewed fuzz harness and corpus for .mbpf parser.
+2025-12-26 test-fuzz-helper-boundary: reviewed helper boundary fuzz harness.
