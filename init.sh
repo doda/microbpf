@@ -200,6 +200,16 @@ if [ -f build/test_error_capability_denied ]; then
     fi
 fi
 
+# Run unit package parser tests
+if [ -f build/test_unit_package_parser ]; then
+    ./build/test_unit_package_parser
+    TEST_RESULT=$?
+    if [ $TEST_RESULT -ne 0 ]; then
+        echo "ERROR: Unit package parser tests failed"
+        exit 1
+    fi
+fi
+
 # Run program unload tests
 if [ -f build/test_program_unload ]; then
     ./build/test_program_unload

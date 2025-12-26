@@ -1114,7 +1114,7 @@
       "Test various invalid inputs",
       "Test edge cases (empty sections, max sizes)"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "test-unit-map-operations",
