@@ -1249,7 +1249,7 @@
       "Cover maps object and low-level map helper code paths",
       "Add tests with long map names and high map counts"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "runtime-map-name-escaping",

@@ -96,6 +96,151 @@ static inline bool safe_size_add(size_t a, size_t b, size_t *out) {
     return true;
 }
 
+/*
+ * Safe string builder for JS code generation.
+ *
+ * Handles:
+ * - Proper snprintf return value checking (detects truncation)
+ * - Dynamic buffer growth when capacity is exceeded
+ * - Prevention of underflow in remaining space tracking
+ *
+ * Usage:
+ *   mbpf_strbuf_t sb;
+ *   if (!strbuf_init(&sb, initial_size)) return -1;
+ *   strbuf_printf(&sb, "format %d", value);
+ *   ...
+ *   if (sb.error) { strbuf_free(&sb); return -1; }
+ *   // Use sb.buf with strlen(sb.buf)
+ *   strbuf_free(&sb);
+ */
+typedef struct mbpf_strbuf {
+    char *buf;         /* Buffer */
+    size_t capacity;   /* Total capacity */
+    size_t len;        /* Current string length (excluding NUL) */
+    bool error;        /* Set on allocation failure */
+} mbpf_strbuf_t;
+
+/* Initialize a string builder with the given initial capacity */
+static bool strbuf_init(mbpf_strbuf_t *sb, size_t initial_capacity) {
+    sb->buf = malloc(initial_capacity);
+    if (!sb->buf) {
+        sb->capacity = 0;
+        sb->len = 0;
+        sb->error = true;
+        return false;
+    }
+    sb->buf[0] = '\0';
+    sb->capacity = initial_capacity;
+    sb->len = 0;
+    sb->error = false;
+    return true;
+}
+
+/* Free the string builder's buffer */
+static void strbuf_free(mbpf_strbuf_t *sb) {
+    if (sb->buf) {
+        free(sb->buf);
+        sb->buf = NULL;
+    }
+    sb->capacity = 0;
+    sb->len = 0;
+}
+
+/* Ensure the buffer has at least min_capacity bytes total */
+static bool strbuf_grow(mbpf_strbuf_t *sb, size_t min_capacity) {
+    if (sb->error) return false;
+    if (sb->capacity >= min_capacity) return true;
+
+    /* Grow by at least 2x or to min_capacity, whichever is larger */
+    size_t new_capacity = sb->capacity * 2;
+    if (new_capacity < min_capacity) {
+        new_capacity = min_capacity;
+    }
+    /* Add some headroom to avoid repeated small growth */
+    if (new_capacity < min_capacity + 4096) {
+        new_capacity = min_capacity + 4096;
+    }
+
+    char *new_buf = realloc(sb->buf, new_capacity);
+    if (!new_buf) {
+        sb->error = true;
+        return false;
+    }
+    sb->buf = new_buf;
+    sb->capacity = new_capacity;
+    return true;
+}
+
+/* Printf-style append to the string builder */
+static void strbuf_printf(mbpf_strbuf_t *sb, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void strbuf_printf(mbpf_strbuf_t *sb, const char *fmt, ...) {
+    if (sb->error) return;
+
+    va_list args;
+    size_t remaining = sb->capacity - sb->len;
+
+    /* First attempt with current buffer */
+    va_start(args, fmt);
+    int written = vsnprintf(sb->buf + sb->len, remaining, fmt, args);
+    va_end(args);
+
+    if (written < 0) {
+        sb->error = true;
+        return;
+    }
+
+    /* Check if truncation occurred */
+    if ((size_t)written >= remaining) {
+        /* Need to grow: we need len + written + 1 bytes total */
+        size_t needed = sb->len + (size_t)written + 1;
+        if (!strbuf_grow(sb, needed)) {
+            return;  /* error flag already set */
+        }
+
+        /* Retry with grown buffer */
+        remaining = sb->capacity - sb->len;
+        va_start(args, fmt);
+        written = vsnprintf(sb->buf + sb->len, remaining, fmt, args);
+        va_end(args);
+
+        if (written < 0 || (size_t)written >= remaining) {
+            sb->error = true;
+            return;
+        }
+    }
+
+    sb->len += (size_t)written;
+}
+
+/* Append a single character (unused currently, but useful for future) */
+static void __attribute__((unused)) strbuf_putc(mbpf_strbuf_t *sb, char c) {
+    if (sb->error) return;
+
+    /* Need space for char + NUL */
+    if (sb->len + 2 > sb->capacity) {
+        if (!strbuf_grow(sb, sb->len + 2)) {
+            return;
+        }
+    }
+    sb->buf[sb->len++] = c;
+    sb->buf[sb->len] = '\0';
+}
+
+/* Append a string */
+static void strbuf_puts(mbpf_strbuf_t *sb, const char *s) {
+    if (sb->error) return;
+
+    size_t slen = strlen(s);
+    size_t needed = sb->len + slen + 1;
+    if (needed > sb->capacity) {
+        if (!strbuf_grow(sb, needed)) {
+            return;
+        }
+    }
+    memcpy(sb->buf + sb->len, s, slen + 1);
+    sb->len += slen;
+}
+
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
 extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
 
@@ -1145,32 +1290,35 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
     int has_cap_write = (caps & MBPF_CAP_MAP_WRITE) != 0;
     int has_cap_iterate = (caps & MBPF_CAP_MAP_ITERATE) != 0;
 
-    /* Build JS code to create maps object.
+    /* Build JS code to create maps object using safe string builder.
      * We generate JS code that creates the maps object with closures
-     * that reference internal data arrays by index. */
+     * that reference internal data arrays by index.
+     *
+     * The string builder handles dynamic growth if estimates are wrong
+     * and prevents underflow from snprintf truncation. */
 
-    /* First, estimate buffer size needed */
-    size_t code_size = 4096;  /* Base size for boilerplate */
+    /* Estimate initial buffer size - will grow if needed */
+    size_t initial_size = 4096;  /* Base size for boilerplate */
     for (uint32_t i = 0; i < prog->map_count; i++) {
         mbpf_map_storage_t *storage = &prog->maps[i];
+        /* Add extra for map name (up to 256 chars) */
+        size_t name_len = storage->name ? strlen(storage->name) : 0;
         if (storage->type == MBPF_MAP_TYPE_LRU) {
-            code_size += 8192;  /* LRU hash maps need ~8KB for LRU list methods */
+            initial_size += 8192 + name_len;  /* LRU hash maps need ~8KB for LRU list methods */
         } else if (storage->type == MBPF_MAP_TYPE_RING) {
-            code_size += 4096;  /* Ring buffer maps need ~4KB for circular buffer methods */
+            initial_size += 4096 + name_len;  /* Ring buffer maps need ~4KB for circular buffer methods */
         } else {
-            code_size += 4096;  /* ~4KB per map for methods (hash maps need more) */
+            initial_size += 4096 + name_len;  /* ~4KB per map for methods (hash maps need more) */
         }
     }
 
-    char *code = malloc(code_size);
-    if (!code) return -1;
-
-    char *p = code;
-    size_t remaining = code_size;
-    int written;
+    mbpf_strbuf_t sb;
+    if (!strbuf_init(&sb, initial_size)) {
+        return -1;
+    }
 
     /* Start the setup IIFE with capability check functions */
-    written = snprintf(p, remaining,
+    strbuf_printf(&sb,
         "(function(){"
         "var ch=function(){if(typeof _checkHelper==='function')_checkHelper();};"
         "var chR=function(){%s};"  /* CAP_MAP_READ check */
@@ -1182,8 +1330,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
         has_cap_read ? "" : "throw new Error('CAP_MAP_READ required');",
         has_cap_write ? "" : "throw new Error('CAP_MAP_WRITE required');",
         has_cap_iterate ? "" : "throw new Error('CAP_MAP_ITERATE required');");
-    p += written;
-    remaining -= written;
 
     /* For each map, add an entry in _mapData and methods */
     for (uint32_t i = 0; i < prog->map_count; i++) {
@@ -1194,15 +1340,13 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
 
             /* Create data array - initially all zeros */
             size_t total_bytes = (size_t)arr->max_entries * arr->value_size;
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "_mapData[%u]=new Uint8Array(%zu);"
                 "_mapValid[%u]=new Uint8Array(%u);",
                 i, total_bytes, i, arr->max_entries);
-            p += written;
-            remaining -= written;
 
             /* Create map object with lookup and update methods */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "maps['%s']={"
                 "lookup:function(idx,outBuf){"
                     "ch();chR();"
@@ -1233,8 +1377,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 arr->max_entries, arr->value_size,
                 arr->value_size, arr->value_size, i,
                 i);
-            p += written;
-            remaining -= written;
         } else if (storage->type == MBPF_MAP_TYPE_HASH) {
             mbpf_hash_map_t *hash = &storage->u.hash;
 
@@ -1243,16 +1385,14 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
             size_t bucket_size = 1 + hash->key_size + hash->value_size;
             size_t total_bytes = (size_t)hash->max_entries * bucket_size;
 
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "_mapData[%u]=new Uint8Array(%zu);"
                 "_mapValid[%u]={count:0};",  /* Use object to track entry count */
                 i, total_bytes, i);
-            p += written;
-            remaining -= written;
 
             /* Create hash map object with lookup, update, and delete methods.
              * We implement a simple hash function using FNV-1a and linear probing. */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "maps['%s']=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
@@ -1390,8 +1530,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 hash->key_size,
                 hash->value_size,
                 (uint32_t)bucket_size);
-            p += written;
-            remaining -= written;
         } else if (storage->type == MBPF_MAP_TYPE_LRU) {
             mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
 
@@ -1405,12 +1543,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
             size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
             size_t total_bytes = (size_t)lru->max_entries * bucket_size;
 
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "_mapData[%u]=new Uint8Array(%zu);"
                 "_mapValid[%u]={count:0,head:0xFFFFFFFF,tail:0xFFFFFFFF};",
                 i, total_bytes, i);
-            p += written;
-            remaining -= written;
 
             /* Create LRU hash map object with lookup, update, and delete methods.
              * LRU functionality:
@@ -1418,7 +1554,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
              * - update: inserts/updates entry and moves to head; evicts tail if at capacity
              * - delete: removes entry from hash table and LRU list
              */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "maps['%s']=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
@@ -1625,23 +1761,19 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 lru->key_size,
                 lru->value_size,
                 (uint32_t)bucket_size);
-            p += written;
-            remaining -= written;
         } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
             /* Per-CPU array map: each instance uses its own CPU-local storage */
             mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
 
             /* Create data array using this CPU's storage */
             size_t total_bytes = (size_t)pca->max_entries * pca->value_size;
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "_mapData[%u]=new Uint8Array(%zu);"
                 "_mapValid[%u]=new Uint8Array(%u);",
                 i, total_bytes, i, pca->max_entries);
-            p += written;
-            remaining -= written;
 
             /* Create map object with lookup, update, and sumAll methods */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "maps['%s']={"
                 "lookup:function(idx,outBuf){"
                     "ch();"
@@ -1674,8 +1806,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 pca->value_size, pca->value_size, i,
                 i,
                 instance_idx);
-            p += written;
-            remaining -= written;
         } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH) {
             /* Per-CPU hash map: each instance uses its own CPU-local storage */
             mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
@@ -1683,15 +1813,13 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
             size_t bucket_size = 1 + pch->key_size + pch->value_size;
             size_t total_bytes = (size_t)pch->max_entries * bucket_size;
 
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "_mapData[%u]=new Uint8Array(%zu);"
                 "_mapValid[%u]={count:0};",
                 i, total_bytes, i);
-            p += written;
-            remaining -= written;
 
             /* Create hash map object with lookup, update, delete, and cpuId methods */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "maps['%s']=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
@@ -1822,8 +1950,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 pch->value_size,
                 (uint32_t)bucket_size,
                 instance_idx);
-            p += written;
-            remaining -= written;
         } else if (storage->type == MBPF_MAP_TYPE_RING) {
             /* Ring buffer map for event output.
              * Provides submit() method to write events.
@@ -1832,18 +1958,16 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
             mbpf_ring_buffer_map_t *ring = &storage->u.ring;
 
             /* Create ring buffer storage as a Uint8Array and metadata object */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "_mapData[%u]=new Uint8Array(%u);"
                 "_mapValid[%u]={head:0,tail:0,dropped:0,eventCount:0,bufSize:%u};",
                 i, ring->buffer_size, i, ring->buffer_size);
-            p += written;
-            remaining -= written;
 
             /* Create ring buffer object with submit method.
              * submit(eventData) writes an event to the ring buffer.
              * Returns true on success, false if event is too large.
              * On overflow, oldest events are dropped to make room. */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "maps['%s']=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
@@ -1935,8 +2059,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 i, i,
                 ring->buffer_size,
                 ring->max_event_size);
-            p += written;
-            remaining -= written;
         } else if (storage->type == MBPF_MAP_TYPE_COUNTER) {
             /* Counter map for 64-bit counters with atomic operations.
              * Uses two arrays:
@@ -1949,21 +2071,19 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
             mbpf_counter_map_t *ctr = &storage->u.counter;
 
             /* Create counter storage with high/low arrays and delta tracking */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "_mapData[%u]={hi:new Int32Array(%u),lo:new Uint32Array(%u),"
                 "dhi:new Int32Array(%u),dlo:new Int32Array(%u),sets:[]};"
                 "_mapValid[%u]=%u;",
                 i, ctr->max_entries, ctr->max_entries,
                 ctr->max_entries, ctr->max_entries,
                 i, ctr->max_entries);
-            p += written;
-            remaining -= written;
 
             /* Create counter map object with add, get, set methods.
              * add() accumulates delta for atomic application after run.
              * get() returns current value + accumulated delta.
              * set() records the new value for post-run assignment. */
-            written = snprintf(p, remaining,
+            strbuf_printf(&sb,
                 "maps['%s']=(function(){"
                 "var d=_mapData[%u];"
                 "var max=%u;"
@@ -2023,24 +2143,27 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 storage->name,
                 i,
                 ctr->max_entries);
-            p += written;
-            remaining -= written;
         }
     }
 
     /* Set global maps object, map data and close IIFE.
      * Note: _mapData and _mapValid are exposed globally to allow host-side
      * access for ring buffer sync. */
-    written = snprintf(p, remaining,
+    strbuf_printf(&sb,
         "globalThis.maps=maps;"
         "globalThis._mapData=_mapData;"
         "globalThis._mapValid=_mapValid;"
         "})()");
-    p += written;
+
+    /* Check for string builder errors */
+    if (sb.error) {
+        strbuf_free(&sb);
+        return -1;
+    }
 
     /* Evaluate the code to set up maps */
-    JSValue result = JS_Eval(ctx, code, strlen(code), "<maps>", JS_EVAL_RETVAL);
-    free(code);
+    JSValue result = JS_Eval(ctx, sb.buf, sb.len, "<maps>", JS_EVAL_RETVAL);
+    strbuf_free(&sb);
 
     if (JS_IsException(result)) {
         JS_GetException(ctx);
@@ -2062,14 +2185,14 @@ static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
         return 0;  /* No maps, no helpers needed */
     }
 
-    /* Estimate code size: ~8KB base for helper code + ~256 bytes per map for metadata */
-    size_t code_size = 12288 + prog->map_count * 256;
-    char *code = malloc(code_size);
-    if (!code) return -1;
+    /* Estimate initial code size - string builder will grow if needed.
+     * ~8KB base for helper code + ~256 bytes per map for metadata */
+    size_t initial_size = 12288 + prog->map_count * 256;
 
-    char *p = code;
-    size_t remaining = code_size;
-    int written;
+    mbpf_strbuf_t sb;
+    if (!strbuf_init(&sb, initial_size)) {
+        return -1;
+    }
 
     /* Create _mapMeta array with metadata for each map.
      * Each entry: {type, keySize, valueSize, maxEntries, bucketSize}
@@ -2078,11 +2201,9 @@ static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
      * - valueSize: size of value in bytes
      * - maxEntries: maximum number of entries
      * - bucketSize: for hash/lru, total size of one bucket entry */
-    written = snprintf(p, remaining,
+    strbuf_printf(&sb,
         "(function(){"
         "globalThis._mapMeta=[");
-    p += written;
-    remaining -= written;
 
     for (uint32_t i = 0; i < prog->map_count; i++) {
         mbpf_map_storage_t *storage = &prog->maps[i];
@@ -2124,14 +2245,12 @@ static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
                 break;
         }
 
-        written = snprintf(p, remaining, "%s{t:%u,kS:%u,vS:%u,mE:%u,bS:%u}",
+        strbuf_printf(&sb, "%s{t:%u,kS:%u,vS:%u,mE:%u,bS:%u}",
             i > 0 ? "," : "", type, key_size, value_size, max_entries, bucket_size);
-        p += written;
-        remaining -= written;
     }
 
     /* Close _mapMeta array and add helper functions to mbpf object */
-    written = snprintf(p, remaining,
+    strbuf_printf(&sb,
         "];"
         /* FNV-1a hash function for Uint8Array keys */
         "function _fnv(k,kS){"
@@ -2408,10 +2527,15 @@ static int setup_lowlevel_map_helpers(JSContext *ctx, mbpf_program_t *prog) {
             "throw new Error('unsupported map type for mapDelete');"
         "};"
         "})()");
-    p += written;
 
-    JSValue result = JS_Eval(ctx, code, strlen(code), "<map_helpers>", JS_EVAL_RETVAL);
-    free(code);
+    /* Check for string builder errors */
+    if (sb.error) {
+        strbuf_free(&sb);
+        return -1;
+    }
+
+    JSValue result = JS_Eval(ctx, sb.buf, sb.len, "<map_helpers>", JS_EVAL_RETVAL);
+    strbuf_free(&sb);
 
     if (JS_IsException(result)) {
         JS_GetException(ctx);
@@ -2759,51 +2883,39 @@ static void sync_maps_from_c_to_js(mbpf_instance_t *inst, mbpf_program_t *prog, 
 
             size_t total_bytes = (size_t)arr->max_entries * arr->value_size;
 
-            /* Build JS code to set all data bytes in batches */
-            /* Use a helper function to copy data: (function(d,bytes){...})(_mapData[i],[...]) */
-            size_t code_size = 256 + total_bytes * 4 + arr->max_entries * 4;  /* Estimate */
-            char *code = malloc(code_size);
-            if (!code) continue;
-
-            char *p = code;
-            int remaining = (int)code_size;
-            int written;
+            /* Build JS code to set all data bytes in batches using safe string builder */
+            size_t initial_size = 256 + total_bytes * 4 + arr->max_entries * 4;
+            mbpf_strbuf_t sb;
+            if (!strbuf_init(&sb, initial_size)) continue;
 
             /* Generate: (function(d,v){for(var i=0;i<bytes.length;i++)d[i]=bytes[i];...})(_mapData[i],[b0,b1,...]) */
-            written = snprintf(p, remaining, "(function(d,v,bytes,valid){"
+            strbuf_printf(&sb, "(function(d,v,bytes,valid){"
                 "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
                 "for(var i=0;i<valid.length;i++)v[i]=valid[i];"
                 "})(_mapData[%u],_mapValid[%u],[", i, i);
-            p += written;
-            remaining -= written;
 
             /* Add data bytes */
             for (size_t j = 0; j < total_bytes; j++) {
-                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", arr->values[j]);
-                p += written;
-                remaining -= written;
+                strbuf_printf(&sb, "%s%u", j > 0 ? "," : "", arr->values[j]);
             }
 
             /* Add valid array */
-            written = snprintf(p, remaining, "],[");
-            p += written;
-            remaining -= written;
+            strbuf_puts(&sb, "],[");
 
             for (uint32_t j = 0; j < arr->max_entries; j++) {
                 int valid_bit = (arr->valid[j / 8] & (1 << (j % 8))) ? 1 : 0;
-                written = snprintf(p, remaining, "%s%d", j > 0 ? "," : "", valid_bit);
-                p += written;
-                remaining -= written;
+                strbuf_printf(&sb, "%s%d", j > 0 ? "," : "", valid_bit);
             }
 
-            written = snprintf(p, remaining, "]);");
-            p += written;
+            strbuf_puts(&sb, "]);");
 
-            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
-            if (JS_IsException(result)) {
-                JS_GetException(ctx);
+            if (!sb.error) {
+                JSValue result = JS_Eval(ctx, sb.buf, sb.len, "<sync>", JS_EVAL_RETVAL);
+                if (JS_IsException(result)) {
+                    JS_GetException(ctx);
+                }
             }
-            free(code);
+            strbuf_free(&sb);
 
         } else if (storage->type == MBPF_MAP_TYPE_HASH) {
             mbpf_hash_map_t *hash = &storage->u.hash;
@@ -2812,35 +2924,28 @@ static void sync_maps_from_c_to_js(mbpf_instance_t *inst, mbpf_program_t *prog, 
             size_t bucket_size = 1 + hash->key_size + hash->value_size;
             size_t total_bytes = (size_t)hash->max_entries * bucket_size;
 
-            /* Build JS code to set all bucket bytes */
-            size_t code_size = 256 + total_bytes * 4;
-            char *code = malloc(code_size);
-            if (!code) continue;
+            /* Build JS code to set all bucket bytes using safe string builder */
+            size_t initial_size = 256 + total_bytes * 4;
+            mbpf_strbuf_t sb;
+            if (!strbuf_init(&sb, initial_size)) continue;
 
-            char *p = code;
-            int remaining = (int)code_size;
-            int written;
-
-            written = snprintf(p, remaining, "(function(d,bytes){"
+            strbuf_printf(&sb, "(function(d,bytes){"
                 "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
                 "})(_mapData[%u],[", i);
-            p += written;
-            remaining -= written;
 
             for (size_t j = 0; j < total_bytes; j++) {
-                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", hash->buckets[j]);
-                p += written;
-                remaining -= written;
+                strbuf_printf(&sb, "%s%u", j > 0 ? "," : "", hash->buckets[j]);
             }
 
-            written = snprintf(p, remaining, "]);_mapValid[%u].count=%u;", i, hash->count);
-            p += written;
+            strbuf_printf(&sb, "]);_mapValid[%u].count=%u;", i, hash->count);
 
-            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
-            if (JS_IsException(result)) {
-                JS_GetException(ctx);
+            if (!sb.error) {
+                JSValue result = JS_Eval(ctx, sb.buf, sb.len, "<sync>", JS_EVAL_RETVAL);
+                if (JS_IsException(result)) {
+                    JS_GetException(ctx);
+                }
             }
-            free(code);
+            strbuf_free(&sb);
         } else if (storage->type == MBPF_MAP_TYPE_LRU) {
             mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
             if (!lru->buckets) continue;
@@ -2849,37 +2954,30 @@ static void sync_maps_from_c_to_js(mbpf_instance_t *inst, mbpf_program_t *prog, 
             size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
             size_t total_bytes = (size_t)lru->max_entries * bucket_size;
 
-            /* Build JS code to set all bucket bytes and metadata */
-            size_t code_size = 256 + total_bytes * 4;
-            char *code = malloc(code_size);
-            if (!code) continue;
+            /* Build JS code to set all bucket bytes and metadata using safe string builder */
+            size_t initial_size = 256 + total_bytes * 4;
+            mbpf_strbuf_t sb;
+            if (!strbuf_init(&sb, initial_size)) continue;
 
-            char *p = code;
-            int remaining = (int)code_size;
-            int written;
-
-            written = snprintf(p, remaining, "(function(d,bytes){"
+            strbuf_printf(&sb, "(function(d,bytes){"
                 "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
                 "})(_mapData[%u],[", i);
-            p += written;
-            remaining -= written;
 
             for (size_t j = 0; j < total_bytes; j++) {
-                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", lru->buckets[j]);
-                p += written;
-                remaining -= written;
+                strbuf_printf(&sb, "%s%u", j > 0 ? "," : "", lru->buckets[j]);
             }
 
             /* Set count, head, tail */
-            written = snprintf(p, remaining, "]);_mapValid[%u].count=%u;_mapValid[%u].head=%u;_mapValid[%u].tail=%u;",
+            strbuf_printf(&sb, "]);_mapValid[%u].count=%u;_mapValid[%u].head=%u;_mapValid[%u].tail=%u;",
                 i, lru->count, i, lru->lru_head, i, lru->lru_tail);
-            p += written;
 
-            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
-            if (JS_IsException(result)) {
-                JS_GetException(ctx);
+            if (!sb.error) {
+                JSValue result = JS_Eval(ctx, sb.buf, sb.len, "<sync>", JS_EVAL_RETVAL);
+                if (JS_IsException(result)) {
+                    JS_GetException(ctx);
+                }
             }
-            free(code);
+            strbuf_free(&sb);
         } else if (storage->type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
             mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
             if (!pca->values || !pca->valid) continue;
@@ -2888,48 +2986,37 @@ static void sync_maps_from_c_to_js(mbpf_instance_t *inst, mbpf_program_t *prog, 
 
             size_t total_bytes = (size_t)pca->max_entries * pca->value_size;
 
-            /* Build JS code to set all data bytes and valid flags */
-            size_t code_size = 256 + total_bytes * 4 + pca->max_entries * 4;
-            char *code = malloc(code_size);
-            if (!code) continue;
+            /* Build JS code to set all data bytes and valid flags using safe string builder */
+            size_t initial_size = 256 + total_bytes * 4 + pca->max_entries * 4;
+            mbpf_strbuf_t sb;
+            if (!strbuf_init(&sb, initial_size)) continue;
 
-            char *p = code;
-            int remaining = (int)code_size;
-            int written;
-
-            written = snprintf(p, remaining, "(function(d,v,bytes,valid){"
+            strbuf_printf(&sb, "(function(d,v,bytes,valid){"
                 "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
                 "for(var i=0;i<valid.length;i++)v[i]=valid[i];"
                 "})(_mapData[%u],_mapValid[%u],[", i, i);
-            p += written;
-            remaining -= written;
 
             /* Add data bytes */
             for (size_t j = 0; j < total_bytes; j++) {
-                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", pca->values[instance_idx][j]);
-                p += written;
-                remaining -= written;
+                strbuf_printf(&sb, "%s%u", j > 0 ? "," : "", pca->values[instance_idx][j]);
             }
 
             /* Add valid array */
-            written = snprintf(p, remaining, "],[");
-            p += written;
-            remaining -= written;
+            strbuf_puts(&sb, "],[");
 
             for (uint32_t j = 0; j < pca->max_entries; j++) {
-                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", pca->valid[instance_idx][j]);
-                p += written;
-                remaining -= written;
+                strbuf_printf(&sb, "%s%u", j > 0 ? "," : "", pca->valid[instance_idx][j]);
             }
 
-            written = snprintf(p, remaining, "]);");
-            p += written;
+            strbuf_puts(&sb, "]);");
 
-            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
-            if (JS_IsException(result)) {
-                JS_GetException(ctx);
+            if (!sb.error) {
+                JSValue result = JS_Eval(ctx, sb.buf, sb.len, "<sync>", JS_EVAL_RETVAL);
+                if (JS_IsException(result)) {
+                    JS_GetException(ctx);
+                }
             }
-            free(code);
+            strbuf_free(&sb);
         } else if (storage->type == MBPF_MAP_TYPE_PERCPU_HASH) {
             mbpf_percpu_hash_map_t *pch = &storage->u.percpu_hash;
             if (!pch->buckets || !pch->counts) continue;
@@ -2939,35 +3026,28 @@ static void sync_maps_from_c_to_js(mbpf_instance_t *inst, mbpf_program_t *prog, 
             size_t bucket_size = 1 + pch->key_size + pch->value_size;
             size_t total_bytes = (size_t)pch->max_entries * bucket_size;
 
-            /* Build JS code to set all bucket bytes */
-            size_t code_size = 256 + total_bytes * 4;
-            char *code = malloc(code_size);
-            if (!code) continue;
+            /* Build JS code to set all bucket bytes using safe string builder */
+            size_t initial_size = 256 + total_bytes * 4;
+            mbpf_strbuf_t sb;
+            if (!strbuf_init(&sb, initial_size)) continue;
 
-            char *p = code;
-            int remaining = (int)code_size;
-            int written;
-
-            written = snprintf(p, remaining, "(function(d,bytes){"
+            strbuf_printf(&sb, "(function(d,bytes){"
                 "for(var i=0;i<bytes.length;i++)d[i]=bytes[i];"
                 "})(_mapData[%u],[", i);
-            p += written;
-            remaining -= written;
 
             for (size_t j = 0; j < total_bytes; j++) {
-                written = snprintf(p, remaining, "%s%u", j > 0 ? "," : "", pch->buckets[instance_idx][j]);
-                p += written;
-                remaining -= written;
+                strbuf_printf(&sb, "%s%u", j > 0 ? "," : "", pch->buckets[instance_idx][j]);
             }
 
-            written = snprintf(p, remaining, "]);_mapValid[%u].count=%u;", i, pch->counts[instance_idx]);
-            p += written;
+            strbuf_printf(&sb, "]);_mapValid[%u].count=%u;", i, pch->counts[instance_idx]);
 
-            JSValue result = JS_Eval(ctx, code, strlen(code), "<sync>", JS_EVAL_RETVAL);
-            if (JS_IsException(result)) {
-                JS_GetException(ctx);
+            if (!sb.error) {
+                JSValue result = JS_Eval(ctx, sb.buf, sb.len, "<sync>", JS_EVAL_RETVAL);
+                if (JS_IsException(result)) {
+                    JS_GetException(ctx);
+                }
             }
-            free(code);
+            strbuf_free(&sb);
         }
         /* Ring buffer and counter maps are not synced */
     }
