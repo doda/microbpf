@@ -267,6 +267,15 @@ struct mbpf_instance {
     JSGCRef maps_obj_ref;       /* GC-protected reference to maps global object */
     bool has_entry_func_ref;    /* Whether entry_func_ref is valid (was registered) */
     bool has_maps_obj_ref;      /* Whether maps_obj_ref is valid (was registered) */
+    /*
+     * Reusable context object for performance optimization.
+     * The ctx object is created once per instance and reused across invocations.
+     * The underlying data is stored in global JS variables that are updated
+     * at each invocation, avoiding per-invocation object allocation.
+     */
+    JSGCRef ctx_obj_ref;        /* GC-protected reference to reusable ctx object */
+    bool has_ctx_obj_ref;       /* Whether ctx_obj_ref is valid (was registered) */
+    bool ctx_initialized;       /* Whether reusable ctx infrastructure is set up */
 };
 
 /* Internal structures */
@@ -3105,6 +3114,11 @@ static void free_instance(mbpf_instance_t *inst) {
             JS_DeleteGCRef(inst->js_ctx, &inst->maps_obj_ref);
             inst->has_maps_obj_ref = false;
         }
+        if (inst->has_ctx_obj_ref) {
+            JS_DeleteGCRef(inst->js_ctx, &inst->ctx_obj_ref);
+            inst->has_ctx_obj_ref = false;
+        }
+        inst->ctx_initialized = false;
 
         JS_FreeContext(inst->js_ctx);
         inst->js_ctx = NULL;
@@ -3187,6 +3201,545 @@ static int register_gc_refs(mbpf_instance_t *inst, const char *entry_symbol) {
     }
 
     return 0;
+}
+
+/*
+ * Initialize reusable context object infrastructure for an instance.
+ *
+ * This creates a ctx object that can be reused across invocations,
+ * avoiding per-invocation allocation. The approach:
+ *
+ * 1. Global variables store the current context data:
+ *    - _ctx_scalars: Object with scalar properties (ifindex, pkt_len, etc.)
+ *    - _ctx_data: Uint8Array for packet/buffer data
+ *
+ * 2. A persistent ctx object with getters that read from the globals
+ *
+ * 3. At each invocation, we update the global variables via JS_Eval
+ *    rather than creating a new object.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+static int init_reusable_ctx(mbpf_instance_t *inst) {
+    if (!inst->js_initialized || !inst->js_ctx) {
+        return -1;
+    }
+
+    JSContext *ctx = inst->js_ctx;
+    inst->has_ctx_obj_ref = false;
+    inst->ctx_initialized = false;
+
+    /*
+     * Create the infrastructure for reusable context.
+     * We create global variables to hold the context data and a ctx object
+     * with getters that reference those globals.
+     *
+     * The ctx object structure:
+     * - Read-only scalar properties (ifindex, pkt_len, data_len, l2_proto, flags)
+     *   that read from _ctx_scalars
+     * - Read methods (readU8, readU16LE, readU32LE, readBytes) that read from _ctx_data
+     *
+     * For hook types without data (TIMER, TRACEPOINT), _ctx_data will be empty.
+     */
+    static const char init_code[] =
+        /* Global storage for context data */
+        "var _ctx_scalars={"
+            "ifindex:0,pkt_len:0,data_len:0,l2_proto:0,flags:0,"
+            /* Timer-specific fields */
+            "timer_id:0,period_us:0,invocation_count:0,timestamp:0,"
+            /* Tracepoint-specific fields */
+            "tracepoint_id:0,cpu:0,pid:0,"
+            /* Security-specific fields */
+            "subject_id:0,object_id:0,action:0,"
+            /* Custom-specific fields */
+            "custom_hook_id:0,schema_version:0,field_count:0"
+        "};"
+        "var _ctx_data=new Uint8Array(0);"
+        /* Create the reusable ctx object with getters */
+        "var _ctx_obj=(function(){"
+            "var s=_ctx_scalars,d=_ctx_data;"
+            "var o={};"
+            /* Standard NET_RX/NET_TX scalar properties */
+            "Object.defineProperty(o,'ifindex',{get:function(){return s.ifindex;},set:function(){}});"
+            "Object.defineProperty(o,'pkt_len',{get:function(){return s.pkt_len;},set:function(){}});"
+            "Object.defineProperty(o,'data_len',{get:function(){return s.data_len;},set:function(){}});"
+            "Object.defineProperty(o,'l2_proto',{get:function(){return s.l2_proto;},set:function(){}});"
+            "Object.defineProperty(o,'flags',{get:function(){return s.flags;},set:function(){}});"
+            /* Timer scalar properties */
+            "Object.defineProperty(o,'timer_id',{get:function(){return s.timer_id;},set:function(){}});"
+            "Object.defineProperty(o,'period_us',{get:function(){return s.period_us;},set:function(){}});"
+            "Object.defineProperty(o,'invocation_count',{get:function(){return s.invocation_count;},set:function(){}});"
+            "Object.defineProperty(o,'timestamp',{get:function(){return s.timestamp;},set:function(){}});"
+            /* Tracepoint scalar properties */
+            "Object.defineProperty(o,'tracepoint_id',{get:function(){return s.tracepoint_id;},set:function(){}});"
+            "Object.defineProperty(o,'cpu',{get:function(){return s.cpu;},set:function(){}});"
+            "Object.defineProperty(o,'pid',{get:function(){return s.pid;},set:function(){}});"
+            /* Security scalar properties */
+            "Object.defineProperty(o,'subject_id',{get:function(){return s.subject_id;},set:function(){}});"
+            "Object.defineProperty(o,'object_id',{get:function(){return s.object_id;},set:function(){}});"
+            "Object.defineProperty(o,'action',{get:function(){return s.action;},set:function(){}});"
+            /* Custom hook scalar properties */
+            "Object.defineProperty(o,'custom_hook_id',{get:function(){return s.custom_hook_id;},set:function(){}});"
+            "Object.defineProperty(o,'schema_version',{get:function(){return s.schema_version;},set:function(){}});"
+            "Object.defineProperty(o,'field_count',{get:function(){return s.field_count;},set:function(){}});"
+            /* Data read methods - these reference _ctx_data which is updated */
+            "o.readU8=function(off){"
+                "var d=_ctx_data;"
+                "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+                "if(off<0)throw new RangeError('offset must be non-negative');"
+                "if(off>=d.length)throw new RangeError('offset out of bounds');"
+                "return d[off];"
+            "};"
+            "o.readU16LE=function(off){"
+                "var d=_ctx_data;"
+                "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+                "if(off<0)throw new RangeError('offset must be non-negative');"
+                "if(off+2>d.length)throw new RangeError('offset out of bounds');"
+                "return d[off]|(d[off+1]<<8);"
+            "};"
+            "o.readU32LE=function(off){"
+                "var d=_ctx_data;"
+                "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+                "if(off<0)throw new RangeError('offset must be non-negative');"
+                "if(off+4>d.length)throw new RangeError('offset out of bounds');"
+                "return (d[off]|(d[off+1]<<8)|(d[off+2]<<16)|(d[off+3]<<24))>>>0;"
+            "};"
+            "o.readBytes=function(off,len,buf){"
+                "var d=_ctx_data;"
+                "if(typeof off!=='number')throw new TypeError('offset must be a number');"
+                "if(typeof len!=='number')throw new TypeError('length must be a number');"
+                "if(!(buf instanceof Uint8Array))throw new TypeError('outBuffer must be a Uint8Array');"
+                "if(off<0)throw new RangeError('offset must be non-negative');"
+                "if(len<0)throw new RangeError('length must be non-negative');"
+                "if(off>=d.length)throw new RangeError('offset out of bounds');"
+                "var n=len;if(off+n>d.length)n=d.length-off;if(n>buf.length)n=buf.length;"
+                "for(var i=0;i<n;i++)buf[i]=d[off+i];"
+                "return n;"
+            "};"
+            "return o;"
+        "})();"
+        "_ctx_obj";  /* Return the ctx object */
+
+    JSValue result = JS_Eval(ctx, init_code, sizeof(init_code) - 1,
+                             "<ctx_init>", JS_EVAL_RETVAL);
+    if (JS_IsException(result)) {
+        JS_GetException(ctx);  /* Clear exception */
+        return -1;
+    }
+
+    /* Register the ctx object as a GC root so it survives across invocations */
+    JSValue *ref_val = JS_AddGCRef(ctx, &inst->ctx_obj_ref);
+    if (!ref_val) {
+        return -1;
+    }
+    *ref_val = result;
+    inst->has_ctx_obj_ref = true;
+    inst->ctx_initialized = true;
+
+    return 0;
+}
+
+/*
+ * Helper to build the data array portion of the update code.
+ *
+ * For small data (<=256 bytes), uses inline array literal:
+ *   "_ctx_data=new Uint8Array([byte0,byte1,...]);"
+ *
+ * For large data (>256 bytes), uses element-by-element assignment to avoid
+ * parser/heap pressure from large inline array literals:
+ *   "var _d=new Uint8Array(2000);_d[0]=11;_d[1]=170;...;_ctx_data=_d;"
+ *
+ * Returns number of bytes written, or -1 on error (buffer too small).
+ */
+static int build_data_array_code(char *buf, size_t buf_size,
+                                  const uint8_t *data, uint32_t data_len) {
+    if (!buf || buf_size == 0) return -1;
+
+    char *p = buf;
+    size_t remaining = buf_size;
+    int written;
+
+    if (!data || data_len == 0) {
+        written = snprintf(p, remaining, "_ctx_data=new Uint8Array(0);");
+        if (written < 0 || (size_t)written >= remaining) return -1;
+        return written;
+    }
+
+    /* Use inline array for small data (<=256 bytes) */
+    if (data_len <= 256) {
+        /* Write opening */
+        written = snprintf(p, remaining, "_ctx_data=new Uint8Array([");
+        if (written < 0 || (size_t)written >= remaining) return -1;
+        p += written;
+        remaining -= (size_t)written;
+
+        /* Write data bytes */
+        for (uint32_t i = 0; i < data_len; i++) {
+            if (i > 0) {
+                if (remaining < 2) return -1;
+                *p++ = ',';
+                remaining--;
+            }
+            written = snprintf(p, remaining, "%u", data[i]);
+            if (written < 0 || (size_t)written >= remaining) return -1;
+            p += written;
+            remaining -= (size_t)written;
+        }
+
+        /* Write closing */
+        written = snprintf(p, remaining, "]);");
+        if (written < 0 || (size_t)written >= remaining) return -1;
+        p += written;
+
+        return (int)(p - buf);
+    }
+
+    /*
+     * For large data, use element assignment approach.
+     * This avoids parser overhead of large inline array literals.
+     */
+    written = snprintf(p, remaining, "var _d=new Uint8Array(%u);", data_len);
+    if (written < 0 || (size_t)written >= remaining) return -1;
+    p += written;
+    remaining -= (size_t)written;
+
+    /* Write each element assignment */
+    for (uint32_t i = 0; i < data_len; i++) {
+        written = snprintf(p, remaining, "_d[%u]=%u;", i, data[i]);
+        if (written < 0 || (size_t)written >= remaining) return -1;
+        p += written;
+        remaining -= (size_t)written;
+    }
+
+    /* Assign to global */
+    written = snprintf(p, remaining, "_ctx_data=_d;");
+    if (written < 0 || (size_t)written >= remaining) return -1;
+    p += written;
+
+    return (int)(p - buf);
+}
+
+/*
+ * Calculate the buffer size needed for the data array code.
+ *
+ * For small data (<=256 bytes): inline array format
+ *   Each byte needs at most 4 chars ("255,"), plus overhead for
+ *   "_ctx_data=new Uint8Array([" (26 chars) and "]);" (3 chars).
+ *
+ * For large data (>256 bytes): element assignment format
+ *   "var _d=new Uint8Array(N);" = ~30 chars
+ *   Each element: "_d[NNNNN]=NNN;" = ~15 chars max
+ *   "_ctx_data=_d;" = 13 chars
+ */
+static size_t calc_data_array_code_size(uint32_t data_len) {
+    if (data_len == 0) {
+        return 32;  /* "_ctx_data=new Uint8Array(0);" + margin */
+    }
+    if (data_len <= 256) {
+        /* Inline array format: 26 for prefix + 4 per byte + 3 for suffix + margin */
+        return 32 + (size_t)data_len * 4;
+    }
+    /* Element assignment format: 50 for prefix/suffix + 15 per element + margin */
+    return 64 + (size_t)data_len * 15;
+}
+
+/*
+ * Update the reusable context object with new data for an invocation.
+ *
+ * This updates the global _ctx_scalars and _ctx_data variables with
+ * the current context blob data. The ctx object's getters will then
+ * read the updated values.
+ *
+ * This is called at the start of each mbpf_run invocation instead of
+ * creating a new ctx object.
+ *
+ * Returns the reusable ctx object (from inst->ctx_obj_ref) on success,
+ * or JS_NULL on error.
+ */
+static JSValue update_reusable_ctx(mbpf_instance_t *inst, mbpf_hook_id_t hook,
+                                   const void *ctx_blob, size_t ctx_len) {
+    if (!inst->ctx_initialized || !inst->has_ctx_obj_ref) {
+        return JS_NULL;
+    }
+
+    /* Early return for NULL ctx_blob to avoid any allocations on hot path */
+    if (!ctx_blob || ctx_len == 0) {
+        return JS_NULL;
+    }
+
+    JSContext *ctx = inst->js_ctx;
+    char *update_code = NULL;
+    uint8_t *owned_data = NULL;
+    JSValue result = JS_NULL;
+
+    /* Determine data length to calculate buffer size */
+    uint32_t data_len = 0;
+    const uint8_t *data = NULL;
+
+    switch ((mbpf_hook_type_t)hook) {
+        case MBPF_HOOK_NET_RX:
+        case MBPF_HOOK_NET_TX:
+            if (ctx_blob && ctx_len >= sizeof(mbpf_ctx_net_rx_v1_t)) {
+                const mbpf_ctx_net_rx_v1_t *net_ctx = (const mbpf_ctx_net_rx_v1_t *)ctx_blob;
+                data = net_ctx->data;
+                data_len = net_ctx->data_len;
+                /* Handle read_fn case */
+                if (!data && net_ctx->read_fn && data_len > 0) {
+                    owned_data = malloc(data_len);
+                    if (owned_data) {
+                        int read_rc = net_ctx->read_fn(ctx_blob, 0, data_len, owned_data);
+                        if (read_rc > 0) {
+                            data = owned_data;
+                            if ((uint32_t)read_rc < data_len) {
+                                data_len = (uint32_t)read_rc;
+                            }
+                        } else {
+                            free(owned_data);
+                            owned_data = NULL;
+                            data = NULL;
+                            data_len = 0;
+                        }
+                    }
+                }
+            }
+            break;
+        case MBPF_HOOK_TRACEPOINT:
+            if (ctx_blob && ctx_len >= sizeof(mbpf_ctx_tracepoint_v1_t)) {
+                const mbpf_ctx_tracepoint_v1_t *tp_ctx = (const mbpf_ctx_tracepoint_v1_t *)ctx_blob;
+                data = tp_ctx->data;
+                data_len = tp_ctx->data_len;
+                if (!data && tp_ctx->read_fn && data_len > 0) {
+                    owned_data = malloc(data_len);
+                    if (owned_data) {
+                        int read_rc = tp_ctx->read_fn(ctx_blob, 0, data_len, owned_data);
+                        if (read_rc > 0) {
+                            data = owned_data;
+                            if ((uint32_t)read_rc < data_len) {
+                                data_len = (uint32_t)read_rc;
+                            }
+                        } else {
+                            free(owned_data);
+                            owned_data = NULL;
+                            data = NULL;
+                            data_len = 0;
+                        }
+                    }
+                }
+            }
+            break;
+        case MBPF_HOOK_SECURITY:
+            if (ctx_blob && ctx_len >= sizeof(mbpf_ctx_security_v1_t)) {
+                const mbpf_ctx_security_v1_t *sec_ctx = (const mbpf_ctx_security_v1_t *)ctx_blob;
+                data = sec_ctx->data;
+                data_len = sec_ctx->data_len;
+                if (!data && sec_ctx->read_fn && data_len > 0) {
+                    owned_data = malloc(data_len);
+                    if (owned_data) {
+                        int read_rc = sec_ctx->read_fn(ctx_blob, 0, data_len, owned_data);
+                        if (read_rc > 0) {
+                            data = owned_data;
+                            if ((uint32_t)read_rc < data_len) {
+                                data_len = (uint32_t)read_rc;
+                            }
+                        } else {
+                            free(owned_data);
+                            owned_data = NULL;
+                            data = NULL;
+                            data_len = 0;
+                        }
+                    }
+                }
+            }
+            break;
+        case MBPF_HOOK_CUSTOM:
+            if (ctx_blob && ctx_len >= sizeof(mbpf_ctx_custom_v1_t)) {
+                const mbpf_ctx_custom_v1_t *custom_ctx = (const mbpf_ctx_custom_v1_t *)ctx_blob;
+                data = custom_ctx->data;
+                data_len = custom_ctx->data_len;
+                if (!data && custom_ctx->read_fn && data_len > 0) {
+                    owned_data = malloc(data_len);
+                    if (owned_data) {
+                        int read_rc = custom_ctx->read_fn(ctx_blob, 0, data_len, owned_data);
+                        if (read_rc > 0) {
+                            data = owned_data;
+                            if ((uint32_t)read_rc < data_len) {
+                                data_len = (uint32_t)read_rc;
+                            }
+                        } else {
+                            free(owned_data);
+                            owned_data = NULL;
+                            data = NULL;
+                            data_len = 0;
+                        }
+                    }
+                }
+            }
+            break;
+        default:
+            /* TIMER and unknown hooks have no data */
+            break;
+    }
+
+    /*
+     * Calculate required buffer size:
+     * - Fixed overhead: ~500 bytes for scalars reset + hook-specific updates + wrapper
+     * - Data array: calc_data_array_code_size(data_len)
+     */
+    size_t buf_size = 512 + calc_data_array_code_size(data_len);
+    update_code = malloc(buf_size);
+    if (!update_code) {
+        free(owned_data);
+        return JS_NULL;
+    }
+
+    char *p = update_code;
+    size_t remaining = buf_size;
+    int written;
+
+    /* Start with opening and reset ALL scalars to defaults.
+     * This ensures fields from other hook types don't retain stale values.
+     * Each hook type will then set only its relevant fields. */
+    written = snprintf(p, remaining,
+        "(function(){var s=_ctx_scalars;"
+        /* Reset all fields to 0/defaults */
+        "s.ifindex=0;s.pkt_len=0;s.data_len=0;s.l2_proto=0;s.flags=0;"
+        "s.timer_id=0;s.period_us=0;s.invocation_count=0;s.timestamp=0;"
+        "s.tracepoint_id=0;s.cpu=0;s.pid=0;"
+        "s.subject_id=0;s.object_id=0;s.action=0;"
+        "s.custom_hook_id=0;s.schema_version=0;s.field_count=0;");
+    if (written < 0 || (size_t)written >= remaining) goto fail;
+    p += written;
+    remaining -= (size_t)written;
+
+    switch ((mbpf_hook_type_t)hook) {
+        case MBPF_HOOK_NET_RX:
+        case MBPF_HOOK_NET_TX: {
+            if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_net_rx_v1_t)) goto fail;
+            const mbpf_ctx_net_rx_v1_t *net_ctx = (const mbpf_ctx_net_rx_v1_t *)ctx_blob;
+
+            written = snprintf(p, remaining,
+                "s.ifindex=%u;s.pkt_len=%u;s.data_len=%u;s.l2_proto=%u;s.flags=%u;",
+                net_ctx->ifindex, net_ctx->pkt_len, net_ctx->data_len,
+                (uint32_t)net_ctx->l2_proto, (uint32_t)net_ctx->flags);
+            if (written < 0 || (size_t)written >= remaining) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+
+            written = build_data_array_code(p, remaining, data, data_len);
+            if (written < 0) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+            break;
+        }
+
+        case MBPF_HOOK_TIMER: {
+            if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_timer_v1_t)) goto fail;
+            const mbpf_ctx_timer_v1_t *timer_ctx = (const mbpf_ctx_timer_v1_t *)ctx_blob;
+
+            written = snprintf(p, remaining,
+                "s.timer_id=%u;s.period_us=%u;s.invocation_count=%llu;"
+                "s.timestamp=%llu;s.flags=%u;"
+                "_ctx_data=new Uint8Array(0);",
+                timer_ctx->timer_id, timer_ctx->period_us,
+                (unsigned long long)timer_ctx->invocation_count,
+                (unsigned long long)timer_ctx->timestamp,
+                (uint32_t)timer_ctx->flags);
+            if (written < 0 || (size_t)written >= remaining) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+            break;
+        }
+
+        case MBPF_HOOK_TRACEPOINT: {
+            if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_tracepoint_v1_t)) goto fail;
+            const mbpf_ctx_tracepoint_v1_t *tp_ctx = (const mbpf_ctx_tracepoint_v1_t *)ctx_blob;
+
+            written = snprintf(p, remaining,
+                "s.tracepoint_id=%u;s.timestamp=%llu;s.cpu=%u;s.pid=%u;"
+                "s.data_len=%u;s.flags=%u;",
+                tp_ctx->tracepoint_id,
+                (unsigned long long)tp_ctx->timestamp,
+                tp_ctx->cpu, tp_ctx->pid,
+                tp_ctx->data_len, (uint32_t)tp_ctx->flags);
+            if (written < 0 || (size_t)written >= remaining) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+
+            written = build_data_array_code(p, remaining, data, data_len);
+            if (written < 0) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+            break;
+        }
+
+        case MBPF_HOOK_SECURITY: {
+            if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_security_v1_t)) goto fail;
+            const mbpf_ctx_security_v1_t *sec_ctx = (const mbpf_ctx_security_v1_t *)ctx_blob;
+
+            written = snprintf(p, remaining,
+                "s.subject_id=%u;s.object_id=%u;s.action=%u;"
+                "s.data_len=%u;s.flags=%u;",
+                sec_ctx->subject_id, sec_ctx->object_id,
+                sec_ctx->action, sec_ctx->data_len, (uint32_t)sec_ctx->flags);
+            if (written < 0 || (size_t)written >= remaining) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+
+            written = build_data_array_code(p, remaining, data, data_len);
+            if (written < 0) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+            break;
+        }
+
+        case MBPF_HOOK_CUSTOM: {
+            if (!ctx_blob || ctx_len < sizeof(mbpf_ctx_custom_v1_t)) goto fail;
+            const mbpf_ctx_custom_v1_t *custom_ctx = (const mbpf_ctx_custom_v1_t *)ctx_blob;
+
+            written = snprintf(p, remaining,
+                "s.custom_hook_id=%u;s.schema_version=%u;s.field_count=%u;"
+                "s.data_len=%u;s.flags=%u;",
+                custom_ctx->custom_hook_id, custom_ctx->schema_version,
+                custom_ctx->field_count, custom_ctx->data_len,
+                (uint32_t)custom_ctx->flags);
+            if (written < 0 || (size_t)written >= remaining) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+
+            written = build_data_array_code(p, remaining, data, data_len);
+            if (written < 0) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+            break;
+        }
+
+        default:
+            written = snprintf(p, remaining, "_ctx_data=new Uint8Array(0);");
+            if (written < 0 || (size_t)written >= remaining) goto fail;
+            p += written;
+            remaining -= (size_t)written;
+            break;
+    }
+
+    /* Close and return the ctx object */
+    written = snprintf(p, remaining, "return _ctx_obj;})()");
+    if (written < 0 || (size_t)written >= remaining) goto fail;
+
+    result = JS_Eval(ctx, update_code, strlen(update_code),
+                     "<ctx_update>", JS_EVAL_RETVAL);
+    if (JS_IsException(result)) {
+        JS_GetException(ctx);  /* Clear exception */
+        result = JS_NULL;
+    }
+
+    free(update_code);
+    free(owned_data);
+    return result;
+
+fail:
+    free(update_code);
+    free(owned_data);
+    return JS_NULL;
 }
 
 /*
@@ -3458,6 +4011,16 @@ int mbpf_program_load(mbpf_runtime_t *rt, const void *pkg, size_t pkg_len,
             mbpf_manifest_free(&prog->manifest);
             free(prog);
             return MBPF_ERR_NO_MEM;
+        }
+    }
+
+    /* Initialize reusable context object infrastructure for each instance.
+     * This creates a ctx object that can be reused across invocations,
+     * avoiding per-invocation allocation. */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        if (init_reusable_ctx(&prog->instances[i]) != 0) {
+            /* Non-fatal - fall back to per-invocation ctx creation */
+            prog->instances[i].ctx_initialized = false;
         }
     }
 
@@ -4425,6 +4988,14 @@ int mbpf_program_update(mbpf_runtime_t *rt, mbpf_program_t *prog,
             prog->bytecode = NULL;
             free_maps(prog);
             return MBPF_ERR_NO_MEM;
+        }
+    }
+
+    /* Initialize reusable context object infrastructure for each instance */
+    for (uint32_t i = 0; i < prog->instance_count; i++) {
+        if (init_reusable_ctx(&prog->instances[i]) != 0) {
+            /* Non-fatal - fall back to per-invocation ctx creation */
+            prog->instances[i].ctx_initialized = false;
         }
     }
 
@@ -5648,10 +6219,21 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         return MBPF_OK;
     }
 
-    /* Create context object from ctx_blob based on hook type.
-     * With GC-protected references, this can be done at any time since
-     * the entry function is held in a JSGCRef that survives compaction. */
-    JSValue ctx_arg = create_hook_ctx(ctx, hook, ctx_blob, ctx_len);
+    /* Get context object for this invocation.
+     * If reusable ctx infrastructure is initialized, update and use the
+     * cached ctx object. Otherwise fall back to creating a new one. */
+    JSValue ctx_arg;
+    if (inst->ctx_initialized) {
+        /* Use reusable ctx: update global data and get the cached object */
+        ctx_arg = update_reusable_ctx(inst, hook, ctx_blob, ctx_len);
+        if (JS_IsNull(ctx_arg)) {
+            /* Fallback to per-invocation creation if update failed */
+            ctx_arg = create_hook_ctx(ctx, hook, ctx_blob, ctx_len);
+        }
+    } else {
+        /* No reusable ctx - create a new one for this invocation */
+        ctx_arg = create_hook_ctx(ctx, hook, ctx_blob, ctx_len);
+    }
 
     /* Use the GC-protected entry function reference.
      * The entry function is registered with JS_AddGCRef at load time,

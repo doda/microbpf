@@ -1060,7 +1060,7 @@
       "Update opaque pointer at each invocation",
       "Verify no per-invocation allocation for ctx"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "lock-free-map-reads",
