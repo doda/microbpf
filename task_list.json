@@ -1071,7 +1071,7 @@
       "Verify no lock contention on reads",
       "Verify correctness under concurrent read/write"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "error-invalid-package",

@@ -559,6 +559,135 @@ uint64_t mbpf_deferred_dropped(const mbpf_deferred_queue_t *queue);
  * Returns true for observer hooks (TRACEPOINT, TIMER), false otherwise. */
 bool mbpf_hook_can_defer(mbpf_hook_type_t hook_type);
 
+/* ============================================================================
+ * Lock-Free Map Read API
+ *
+ * These functions provide lock-free reads from C-side map storage using
+ * a seqlock pattern. Reads detect torn reads and retry automatically,
+ * allowing concurrent reads without acquiring locks.
+ *
+ * Note: These APIs read from C-side storage which is synced from JS-side
+ * at certain points (program unload, update). For real-time concurrent
+ * access, the host must ensure syncs happen appropriately.
+ * ============================================================================ */
+
+/*
+ * Find a map by name in a program.
+ * Returns the map index (0-based) or -1 if not found.
+ */
+int mbpf_program_find_map(mbpf_program_t *prog, const char *name);
+
+/*
+ * Get the type of a map by index.
+ * Returns the map type (MBPF_MAP_TYPE_*) or -1 on error.
+ */
+int mbpf_map_get_type(mbpf_program_t *prog, int map_idx);
+
+/*
+ * Lock-free array map lookup.
+ *
+ * Uses seqlock to detect torn reads and retries automatically.
+ * This provides lock-free concurrent read access.
+ *
+ * Parameters:
+ *   prog      - The program containing the map
+ *   map_idx   - Map index from mbpf_program_find_map
+ *   index     - Array index to look up
+ *   out_value - Buffer to receive the value
+ *   max_len   - Size of out_value buffer
+ *
+ * Returns:
+ *   1 - Entry found and copied to out_value
+ *   0 - Entry not found (index invalid or not set)
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_array_map_lookup_lockfree(mbpf_program_t *prog, int map_idx,
+                                    uint32_t index, void *out_value, size_t max_len);
+
+/*
+ * Lock-free hash map lookup.
+ *
+ * Uses seqlock to detect torn reads and retries automatically.
+ * This provides lock-free concurrent read access.
+ *
+ * Parameters:
+ *   prog      - The program containing the map
+ *   map_idx   - Map index from mbpf_program_find_map
+ *   key       - Key to look up
+ *   key_len   - Size of key buffer (must be >= map's key_size)
+ *   out_value - Buffer to receive the value
+ *   max_len   - Size of out_value buffer
+ *
+ * Returns:
+ *   1 - Entry found and copied to out_value
+ *   0 - Entry not found
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_hash_map_lookup_lockfree(mbpf_program_t *prog, int map_idx,
+                                   const void *key, size_t key_len,
+                                   void *out_value, size_t max_len);
+
+/*
+ * Lock-free LRU hash map lookup.
+ *
+ * Note: This lock-free read does NOT update LRU access order (which would
+ * require a write). For true LRU semantics, use the JS-side lookup.
+ *
+ * Parameters:
+ *   prog      - The program containing the map
+ *   map_idx   - Map index from mbpf_program_find_map
+ *   key       - Key to look up
+ *   key_len   - Size of key buffer (must be >= map's key_size)
+ *   out_value - Buffer to receive the value
+ *   max_len   - Size of out_value buffer
+ *
+ * Returns:
+ *   1 - Entry found and copied to out_value
+ *   0 - Entry not found
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_lru_map_lookup_lockfree(mbpf_program_t *prog, int map_idx,
+                                  const void *key, size_t key_len,
+                                  void *out_value, size_t max_len);
+
+/*
+ * Array map update with seqlock protection.
+ *
+ * This function updates an array map entry while holding the seqlock,
+ * ensuring that concurrent lock-free reads see consistent data.
+ *
+ * Returns:
+ *   0 - Success
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_array_map_update_locked(mbpf_program_t *prog, int map_idx,
+                                  uint32_t index, const void *value, size_t value_len);
+
+/*
+ * Hash map update with seqlock protection.
+ *
+ * This function updates a hash map entry while holding the seqlock,
+ * ensuring that concurrent lock-free reads see consistent data.
+ *
+ * Returns:
+ *   0 - Success (inserted or updated)
+ *  -1 - Error (invalid arguments or table full)
+ */
+int mbpf_hash_map_update_locked(mbpf_program_t *prog, int map_idx,
+                                 const void *key, size_t key_len,
+                                 const void *value, size_t value_len);
+
+/*
+ * Hash map delete with seqlock protection.
+ *
+ * Returns:
+ *   0 - Success (key deleted)
+ *   1 - Key not found
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_hash_map_delete_locked(mbpf_program_t *prog, int map_idx,
+                                 const void *key, size_t key_len);
+
 #ifdef __cplusplus
 }
 #endif

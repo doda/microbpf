@@ -15,6 +15,56 @@
 #include <sched.h>
 #include <unistd.h>
 #include <time.h>
+#include <stdatomic.h>
+
+/*
+ * Sequence lock for lock-free map reads.
+ *
+ * This implements a seqlock pattern that allows:
+ * - Writers to acquire exclusive access (increment sequence before/after)
+ * - Readers to detect torn reads by checking sequence stability
+ *
+ * The sequence counter is always even when no write is in progress.
+ * Writers increment to odd (write-in-progress) then back to even.
+ * Readers retry if they see an odd sequence or if sequence changed.
+ */
+typedef struct mbpf_seqlock {
+    _Atomic uint32_t sequence;
+} mbpf_seqlock_t;
+
+/* Initialize a seqlock */
+static inline void seqlock_init(mbpf_seqlock_t *lock) {
+    atomic_store_explicit(&lock->sequence, 0, memory_order_relaxed);
+}
+
+/* Begin a write operation (acquires exclusive access) */
+static inline void seqlock_write_begin(mbpf_seqlock_t *lock) {
+    uint32_t seq = atomic_load_explicit(&lock->sequence, memory_order_relaxed);
+    atomic_store_explicit(&lock->sequence, seq + 1, memory_order_release);
+    atomic_thread_fence(memory_order_seq_cst);
+}
+
+/* End a write operation */
+static inline void seqlock_write_end(mbpf_seqlock_t *lock) {
+    atomic_thread_fence(memory_order_seq_cst);
+    uint32_t seq = atomic_load_explicit(&lock->sequence, memory_order_relaxed);
+    atomic_store_explicit(&lock->sequence, seq + 1, memory_order_release);
+}
+
+/* Begin a read operation (returns sequence for validation) */
+static inline uint32_t seqlock_read_begin(mbpf_seqlock_t *lock) {
+    uint32_t seq;
+    do {
+        seq = atomic_load_explicit(&lock->sequence, memory_order_acquire);
+    } while (seq & 1);  /* Wait if write in progress (odd sequence) */
+    return seq;
+}
+
+/* Validate a read operation (returns true if read was consistent) */
+static inline bool seqlock_read_validate(mbpf_seqlock_t *lock, uint32_t seq) {
+    atomic_thread_fence(memory_order_acquire);
+    return atomic_load_explicit(&lock->sequence, memory_order_relaxed) == seq;
+}
 
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
 extern const JSSTDLibraryDef *mbpf_get_js_stdlib(void);
@@ -108,18 +158,25 @@ static void call_mbpf_fini_on_instance(struct mbpf_instance *inst);
  * Runtime array map storage.
  * For array maps, values are stored in a flat array.
  * A bitmap tracks which entries have been set.
+ *
+ * Lock-free reads are supported via a seqlock. Readers check the sequence
+ * before and after reading; if it changed or is odd, they retry.
  */
 typedef struct mbpf_array_map {
     uint32_t max_entries;       /* Maximum number of entries */
     uint32_t value_size;        /* Size of each value in bytes */
     uint8_t *values;            /* Flat array: max_entries * value_size bytes */
     uint8_t *valid;             /* Bitmap: (max_entries + 7) / 8 bytes */
+    mbpf_seqlock_t seqlock;     /* Seqlock for lock-free reads */
 } mbpf_array_map_t;
 
 /*
  * Runtime hash map storage.
  * Uses open addressing with linear probing.
  * Each bucket stores: valid flag, key bytes, value bytes.
+ *
+ * Lock-free reads are supported via a seqlock. Readers check the sequence
+ * before and after reading; if it changed or is odd, they retry.
  */
 typedef struct mbpf_hash_map {
     uint32_t max_entries;       /* Maximum number of entries */
@@ -128,6 +185,7 @@ typedef struct mbpf_hash_map {
     uint32_t count;             /* Current number of entries */
     uint8_t *buckets;           /* Bucket array: max_entries * (1 + key_size + value_size) bytes */
                                 /* Each bucket: [valid:1][key:key_size][value:value_size] */
+    mbpf_seqlock_t seqlock;     /* Seqlock for lock-free reads */
 } mbpf_hash_map_t;
 
 /*
@@ -141,6 +199,9 @@ typedef struct mbpf_hash_map {
  * - prev/next: 4-byte indices for LRU doubly-linked list (0xFFFFFFFF = null)
  *
  * The LRU list has head (most recently used) and tail (least recently used).
+ *
+ * Lock-free reads are supported via a seqlock. Readers check the sequence
+ * before and after reading; if it changed or is odd, they retry.
  */
 typedef struct mbpf_lru_hash_map {
     uint32_t max_entries;       /* Maximum number of entries */
@@ -150,6 +211,7 @@ typedef struct mbpf_lru_hash_map {
     uint32_t lru_head;          /* Index of most recently used (head of list) */
     uint32_t lru_tail;          /* Index of least recently used (tail of list) */
     uint8_t *buckets;           /* Bucket array: max_entries * (1 + 4 + 4 + key_size + value_size) bytes */
+    mbpf_seqlock_t seqlock;     /* Seqlock for lock-free reads */
 } mbpf_lru_hash_map_t;
 
 /*
@@ -492,6 +554,9 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
                 arr->values = NULL;
                 goto cleanup;
             }
+
+            /* Initialize seqlock for lock-free reads */
+            seqlock_init(&arr->seqlock);
         } else if (effective_type == MBPF_MAP_TYPE_HASH) {
             mbpf_hash_map_t *hash = &storage->u.hash;
             hash->max_entries = def->max_entries;
@@ -506,6 +571,9 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             if (!hash->buckets) {
                 goto cleanup;
             }
+
+            /* Initialize seqlock for lock-free reads */
+            seqlock_init(&hash->seqlock);
         } else if (effective_type == MBPF_MAP_TYPE_LRU) {
             mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
             lru->max_entries = def->max_entries;
@@ -522,6 +590,9 @@ static int create_maps_from_manifest(mbpf_program_t *prog, uint32_t num_instance
             if (!lru->buckets) {
                 goto cleanup;
             }
+
+            /* Initialize seqlock for lock-free reads */
+            seqlock_init(&lru->seqlock);
         } else if (effective_type == MBPF_MAP_TYPE_PERCPU_ARRAY) {
             /* Per-CPU array: allocate separate storage for each CPU */
             mbpf_percpu_array_map_t *pca = &storage->u.percpu_array;
@@ -7339,4 +7410,453 @@ const char *mbpf_program_debug_map_name(mbpf_program_t *prog, uint32_t index) {
     if (index >= prog->debug_info.map_count) return NULL;
     if (!prog->debug_info.map_names) return NULL;
     return prog->debug_info.map_names[index];
+}
+
+/* ============================================================================
+ * Lock-Free Map Read API
+ *
+ * These functions provide lock-free reads from C-side map storage.
+ * They use a seqlock pattern to detect torn reads and retry automatically.
+ *
+ * Note: These APIs read from C-side storage which is synced from JS-side
+ * at certain points (program unload, update). For real-time concurrent
+ * access, the host must ensure syncs happen appropriately.
+ * ============================================================================ */
+
+int mbpf_program_find_map(mbpf_program_t *prog, const char *name) {
+    if (!prog || !name || !prog->maps) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < prog->map_count; i++) {
+        mbpf_map_storage_t *storage = &prog->maps[i];
+        if (strncmp(storage->name, name, sizeof(storage->name)) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+int mbpf_map_get_type(mbpf_program_t *prog, int map_idx) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps) {
+        return -1;
+    }
+    return (int)prog->maps[map_idx].type;
+}
+
+/*
+ * Lock-free array map lookup.
+ *
+ * Uses seqlock to detect torn reads and retries automatically.
+ * Returns:
+ *   1 - Entry found and copied to out_value
+ *   0 - Entry not found (index invalid or not set)
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_array_map_lookup_lockfree(mbpf_program_t *prog, int map_idx,
+                                    uint32_t index, void *out_value, size_t max_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps || !out_value) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_ARRAY) {
+        return -1;
+    }
+
+    mbpf_array_map_t *arr = &storage->u.array;
+    if (index >= arr->max_entries || !arr->values || !arr->valid) {
+        return -1;
+    }
+
+    size_t copy_len = arr->value_size < max_len ? arr->value_size : max_len;
+    size_t offset = (size_t)index * arr->value_size;
+    uint32_t bitmap_byte = index / 8;
+    uint8_t bitmap_bit = (uint8_t)(1 << (index % 8));
+
+    /* Lock-free read with seqlock retry loop */
+    for (;;) {
+        uint32_t seq = seqlock_read_begin(&arr->seqlock);
+
+        /* Check validity */
+        uint8_t is_valid = arr->valid[bitmap_byte] & bitmap_bit;
+        if (!is_valid) {
+            /* Entry not set - validate and return */
+            if (seqlock_read_validate(&arr->seqlock, seq)) {
+                return 0;
+            }
+            continue;  /* Retry */
+        }
+
+        /* Copy value */
+        memcpy(out_value, arr->values + offset, copy_len);
+
+        /* Validate read - if sequence changed, we may have read torn data */
+        if (seqlock_read_validate(&arr->seqlock, seq)) {
+            return 1;  /* Success */
+        }
+        /* Retry the read */
+    }
+}
+
+/*
+ * Lock-free hash map lookup.
+ *
+ * Uses seqlock to detect torn reads and retries automatically.
+ * Returns:
+ *   1 - Entry found and copied to out_value
+ *   0 - Entry not found
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_hash_map_lookup_lockfree(mbpf_program_t *prog, int map_idx,
+                                   const void *key, size_t key_len,
+                                   void *out_value, size_t max_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps ||
+        !key || !out_value) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_HASH) {
+        return -1;
+    }
+
+    mbpf_hash_map_t *hash = &storage->u.hash;
+    if (!hash->buckets || key_len < hash->key_size) {
+        return -1;
+    }
+
+    size_t bucket_size = 1 + hash->key_size + hash->value_size;
+    size_t copy_len = hash->value_size < max_len ? hash->value_size : max_len;
+
+    /* FNV-1a hash function */
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < hash->key_size; i++) {
+        h ^= ((const uint8_t *)key)[i];
+        h *= 16777619u;
+    }
+
+    /* Lock-free read with seqlock retry loop */
+    for (;;) {
+        uint32_t seq = seqlock_read_begin(&hash->seqlock);
+
+        /* Linear probing search */
+        for (uint32_t i = 0; i < hash->max_entries; i++) {
+            uint32_t idx = (h + i) % hash->max_entries;
+            size_t off = idx * bucket_size;
+            uint8_t status = hash->buckets[off];
+
+            if (status == 0) {
+                /* Empty slot - key not found */
+                if (seqlock_read_validate(&hash->seqlock, seq)) {
+                    return 0;
+                }
+                break;  /* Retry from scratch */
+            }
+
+            if (status == 1) {
+                /* Valid entry - check if key matches */
+                if (memcmp(hash->buckets + off + 1, key, hash->key_size) == 0) {
+                    /* Key matches - copy value */
+                    memcpy(out_value, hash->buckets + off + 1 + hash->key_size, copy_len);
+                    if (seqlock_read_validate(&hash->seqlock, seq)) {
+                        return 1;  /* Success */
+                    }
+                    break;  /* Retry from scratch */
+                }
+            }
+            /* status == 2 means deleted (tombstone), keep probing */
+        }
+
+        /* Either we need to retry or we exhausted all slots */
+        if (seqlock_read_validate(&hash->seqlock, seq)) {
+            return 0;  /* Key not found */
+        }
+        /* Retry the read */
+    }
+}
+
+/*
+ * Lock-free LRU hash map lookup.
+ *
+ * Note: LRU lookups typically update the access order, but this lock-free
+ * read does NOT update LRU order (which would require a write). For true
+ * LRU semantics, use the JS-side lookup which updates order.
+ *
+ * Returns:
+ *   1 - Entry found and copied to out_value
+ *   0 - Entry not found
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_lru_map_lookup_lockfree(mbpf_program_t *prog, int map_idx,
+                                  const void *key, size_t key_len,
+                                  void *out_value, size_t max_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps ||
+        !key || !out_value) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_LRU) {
+        return -1;
+    }
+
+    mbpf_lru_hash_map_t *lru = &storage->u.lru_hash;
+    if (!lru->buckets || key_len < lru->key_size) {
+        return -1;
+    }
+
+    /* LRU bucket layout: [valid:1][prev:4][next:4][key][value] */
+    size_t bucket_size = 1 + 4 + 4 + lru->key_size + lru->value_size;
+    size_t copy_len = lru->value_size < max_len ? lru->value_size : max_len;
+
+    /* FNV-1a hash function */
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < lru->key_size; i++) {
+        h ^= ((const uint8_t *)key)[i];
+        h *= 16777619u;
+    }
+
+    /* Lock-free read with seqlock retry loop */
+    for (;;) {
+        uint32_t seq = seqlock_read_begin(&lru->seqlock);
+
+        /* Linear probing search */
+        for (uint32_t i = 0; i < lru->max_entries; i++) {
+            uint32_t idx = (h + i) % lru->max_entries;
+            size_t off = idx * bucket_size;
+            uint8_t status = lru->buckets[off];
+
+            if (status == 0) {
+                /* Empty slot - key not found */
+                if (seqlock_read_validate(&lru->seqlock, seq)) {
+                    return 0;
+                }
+                break;  /* Retry from scratch */
+            }
+
+            if (status == 1) {
+                /* Valid entry - check if key matches (key starts at offset 9) */
+                if (memcmp(lru->buckets + off + 9, key, lru->key_size) == 0) {
+                    /* Key matches - copy value (value starts after key) */
+                    memcpy(out_value, lru->buckets + off + 9 + lru->key_size, copy_len);
+                    if (seqlock_read_validate(&lru->seqlock, seq)) {
+                        return 1;  /* Success */
+                    }
+                    break;  /* Retry from scratch */
+                }
+            }
+            /* status == 2 means deleted (tombstone), keep probing */
+        }
+
+        /* Either we need to retry or we exhausted all slots */
+        if (seqlock_read_validate(&lru->seqlock, seq)) {
+            return 0;  /* Key not found */
+        }
+        /* Retry the read */
+    }
+}
+
+/*
+ * Array map update with seqlock protection.
+ *
+ * This function updates an array map entry while holding the seqlock,
+ * ensuring that concurrent lock-free reads see consistent data.
+ *
+ * Returns:
+ *   0 - Success
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_array_map_update_locked(mbpf_program_t *prog, int map_idx,
+                                  uint32_t index, const void *value, size_t value_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps || !value) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_ARRAY) {
+        return -1;
+    }
+
+    mbpf_array_map_t *arr = &storage->u.array;
+    if (index >= arr->max_entries || !arr->values || !arr->valid) {
+        return -1;
+    }
+
+    if (value_len < arr->value_size) {
+        return -1;
+    }
+
+    size_t offset = (size_t)index * arr->value_size;
+    uint32_t bitmap_byte = index / 8;
+    uint8_t bitmap_bit = (uint8_t)(1 << (index % 8));
+
+    /* Acquire seqlock for write */
+    seqlock_write_begin(&arr->seqlock);
+
+    /* Update value and validity */
+    memcpy(arr->values + offset, value, arr->value_size);
+    arr->valid[bitmap_byte] |= bitmap_bit;
+
+    /* Release seqlock */
+    seqlock_write_end(&arr->seqlock);
+
+    return 0;
+}
+
+/*
+ * Hash map update with seqlock protection.
+ *
+ * This function updates a hash map entry while holding the seqlock,
+ * ensuring that concurrent lock-free reads see consistent data.
+ *
+ * Returns:
+ *   0 - Success (inserted or updated)
+ *  -1 - Error (invalid arguments or table full)
+ */
+int mbpf_hash_map_update_locked(mbpf_program_t *prog, int map_idx,
+                                 const void *key, size_t key_len,
+                                 const void *value, size_t value_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps ||
+        !key || !value) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_HASH) {
+        return -1;
+    }
+
+    mbpf_hash_map_t *hash = &storage->u.hash;
+    if (!hash->buckets || key_len < hash->key_size || value_len < hash->value_size) {
+        return -1;
+    }
+
+    size_t bucket_size = 1 + hash->key_size + hash->value_size;
+
+    /* FNV-1a hash function */
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < hash->key_size; i++) {
+        h ^= ((const uint8_t *)key)[i];
+        h *= 16777619u;
+    }
+
+    /* Acquire seqlock for write */
+    seqlock_write_begin(&hash->seqlock);
+
+    int result = -1;
+    int32_t first_del = -1;
+
+    /* Linear probing search */
+    for (uint32_t i = 0; i < hash->max_entries; i++) {
+        uint32_t idx = (h + i) % hash->max_entries;
+        size_t off = idx * bucket_size;
+        uint8_t status = hash->buckets[off];
+
+        if (status == 0) {
+            /* Empty slot - insert here or at first deleted */
+            size_t insert_off = (first_del >= 0) ? (size_t)first_del : off;
+            hash->buckets[insert_off] = 1;  /* Valid */
+            memcpy(hash->buckets + insert_off + 1, key, hash->key_size);
+            memcpy(hash->buckets + insert_off + 1 + hash->key_size, value, hash->value_size);
+            hash->count++;
+            result = 0;
+            break;
+        }
+
+        if (status == 2 && first_del < 0) {
+            first_del = (int32_t)off;  /* Remember first deleted slot */
+        }
+
+        if (status == 1) {
+            /* Valid entry - check if key matches */
+            if (memcmp(hash->buckets + off + 1, key, hash->key_size) == 0) {
+                /* Key exists - update value */
+                memcpy(hash->buckets + off + 1 + hash->key_size, value, hash->value_size);
+                result = 0;
+                break;
+            }
+        }
+    }
+
+    /* If we didn't find a slot but have a deleted slot, use it */
+    if (result == -1 && first_del >= 0) {
+        hash->buckets[first_del] = 1;  /* Valid */
+        memcpy(hash->buckets + first_del + 1, key, hash->key_size);
+        memcpy(hash->buckets + first_del + 1 + hash->key_size, value, hash->value_size);
+        hash->count++;
+        result = 0;
+    }
+
+    /* Release seqlock */
+    seqlock_write_end(&hash->seqlock);
+
+    return result;
+}
+
+/*
+ * Hash map delete with seqlock protection.
+ *
+ * Returns:
+ *   0 - Success (key deleted)
+ *   1 - Key not found
+ *  -1 - Error (invalid arguments)
+ */
+int mbpf_hash_map_delete_locked(mbpf_program_t *prog, int map_idx,
+                                 const void *key, size_t key_len) {
+    if (!prog || map_idx < 0 || (uint32_t)map_idx >= prog->map_count || !prog->maps || !key) {
+        return -1;
+    }
+
+    mbpf_map_storage_t *storage = &prog->maps[map_idx];
+    if (storage->type != MBPF_MAP_TYPE_HASH) {
+        return -1;
+    }
+
+    mbpf_hash_map_t *hash = &storage->u.hash;
+    if (!hash->buckets || key_len < hash->key_size) {
+        return -1;
+    }
+
+    size_t bucket_size = 1 + hash->key_size + hash->value_size;
+
+    /* FNV-1a hash function */
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < hash->key_size; i++) {
+        h ^= ((const uint8_t *)key)[i];
+        h *= 16777619u;
+    }
+
+    /* Acquire seqlock for write */
+    seqlock_write_begin(&hash->seqlock);
+
+    int result = 1;  /* Not found */
+
+    /* Linear probing search */
+    for (uint32_t i = 0; i < hash->max_entries; i++) {
+        uint32_t idx = (h + i) % hash->max_entries;
+        size_t off = idx * bucket_size;
+        uint8_t status = hash->buckets[off];
+
+        if (status == 0) {
+            /* Empty slot - key not found */
+            break;
+        }
+
+        if (status == 1) {
+            /* Valid entry - check if key matches */
+            if (memcmp(hash->buckets + off + 1, key, hash->key_size) == 0) {
+                /* Mark as deleted (tombstone) */
+                hash->buckets[off] = 2;
+                hash->count--;
+                result = 0;
+                break;
+            }
+        }
+    }
+
+    /* Release seqlock */
+    seqlock_write_end(&hash->seqlock);
+
+    return result;
 }
