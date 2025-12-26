@@ -1261,7 +1261,7 @@
       "Consider rejecting invalid names at manifest parse time",
       "Add tests with malicious or malformed map names"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "ring-buffer-sync-bounds",

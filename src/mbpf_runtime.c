@@ -212,8 +212,8 @@ static void strbuf_printf(mbpf_strbuf_t *sb, const char *fmt, ...) {
     sb->len += (size_t)written;
 }
 
-/* Append a single character (unused currently, but useful for future) */
-static void __attribute__((unused)) strbuf_putc(mbpf_strbuf_t *sb, char c) {
+/* Append a single character */
+static void strbuf_putc(mbpf_strbuf_t *sb, char c) {
     if (sb->error) return;
 
     /* Need space for char + NUL */
@@ -239,6 +239,56 @@ static void strbuf_puts(mbpf_strbuf_t *sb, const char *s) {
     }
     memcpy(sb->buf + sb->len, s, slen + 1);
     sb->len += slen;
+}
+
+/*
+ * Append a JS string literal with proper escaping for embedded strings.
+ * Escapes: single quotes, double quotes, backslashes, and control characters.
+ * The string is surrounded by single quotes.
+ */
+static void strbuf_append_js_string(mbpf_strbuf_t *sb, const char *s) {
+    if (sb->error) return;
+
+    strbuf_putc(sb, '\'');
+
+    while (*s) {
+        unsigned char c = (unsigned char)*s++;
+        switch (c) {
+            case '\'':
+                strbuf_puts(sb, "\\'");
+                break;
+            case '"':
+                strbuf_puts(sb, "\\\"");
+                break;
+            case '\\':
+                strbuf_puts(sb, "\\\\");
+                break;
+            case '\n':
+                strbuf_puts(sb, "\\n");
+                break;
+            case '\r':
+                strbuf_puts(sb, "\\r");
+                break;
+            case '\t':
+                strbuf_puts(sb, "\\t");
+                break;
+            case '\0':
+                strbuf_puts(sb, "\\0");
+                break;
+            default:
+                if (c < 0x20 || c == 0x7F) {
+                    /* Escape other control characters as \xHH */
+                    char hex[5];
+                    snprintf(hex, sizeof(hex), "\\x%02x", c);
+                    strbuf_puts(sb, hex);
+                } else {
+                    strbuf_putc(sb, (char)c);
+                }
+                break;
+        }
+    }
+
+    strbuf_putc(sb, '\'');
 }
 
 /* Get the JS stdlib (defined in mbpf_stdlib.c) */
@@ -1346,8 +1396,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 i, total_bytes, i, arr->max_entries);
 
             /* Create map object with lookup and update methods */
+            strbuf_puts(&sb, "maps[");
+            strbuf_append_js_string(&sb, storage->name);
             strbuf_printf(&sb,
-                "maps['%s']={"
+                "]={"
                 "lookup:function(idx,outBuf){"
                     "ch();chR();"
                     "if(typeof idx!=='number')throw new TypeError('index must be a number');"
@@ -1371,7 +1423,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                     "return true;"
                 "}"
                 "};",
-                storage->name,
                 arr->max_entries, arr->value_size,
                 i, arr->value_size, arr->value_size, i,
                 arr->max_entries, arr->value_size,
@@ -1392,8 +1443,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
 
             /* Create hash map object with lookup, update, and delete methods.
              * We implement a simple hash function using FNV-1a and linear probing. */
+            strbuf_puts(&sb, "maps[");
+            strbuf_append_js_string(&sb, storage->name);
             strbuf_printf(&sb,
-                "maps['%s']=(function(){"
+                "]=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
                 "var maxE=%u;"
@@ -1524,7 +1577,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "}"
                 "};"
                 "})();",
-                storage->name,
                 i, i,
                 hash->max_entries,
                 hash->key_size,
@@ -1554,8 +1606,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
              * - update: inserts/updates entry and moves to head; evicts tail if at capacity
              * - delete: removes entry from hash table and LRU list
              */
+            strbuf_puts(&sb, "maps[");
+            strbuf_append_js_string(&sb, storage->name);
             strbuf_printf(&sb,
-                "maps['%s']=(function(){"
+                "]=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
                 "var maxE=%u;"
@@ -1755,7 +1809,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "}"
                 "};"
                 "})();",
-                storage->name,
                 i, i,
                 lru->max_entries,
                 lru->key_size,
@@ -1773,8 +1826,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 i, total_bytes, i, pca->max_entries);
 
             /* Create map object with lookup, update, and sumAll methods */
+            strbuf_puts(&sb, "maps[");
+            strbuf_append_js_string(&sb, storage->name);
             strbuf_printf(&sb,
-                "maps['%s']={"
+                "]={"
                 "lookup:function(idx,outBuf){"
                     "ch();"
                     "if(typeof idx!=='number')throw new TypeError('index must be a number');"
@@ -1799,7 +1854,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "},"
                 "cpuId:function(){ch();return %u;}"  /* Returns this instance's CPU ID */
                 "};",
-                storage->name,
                 pca->max_entries, pca->value_size,
                 i, pca->value_size, pca->value_size, i,
                 pca->max_entries, pca->value_size,
@@ -1819,8 +1873,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 i, total_bytes, i);
 
             /* Create hash map object with lookup, update, delete, and cpuId methods */
+            strbuf_puts(&sb, "maps[");
+            strbuf_append_js_string(&sb, storage->name);
             strbuf_printf(&sb,
-                "maps['%s']=(function(){"
+                "]=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
                 "var maxE=%u;"
@@ -1943,7 +1999,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "cpuId:function(){ch();return %u;}"
                 "};"
                 "})();",
-                storage->name,
                 i, i,
                 pch->max_entries,
                 pch->key_size,
@@ -1967,8 +2022,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
              * submit(eventData) writes an event to the ring buffer.
              * Returns true on success, false if event is too large.
              * On overflow, oldest events are dropped to make room. */
+            strbuf_puts(&sb, "maps[");
+            strbuf_append_js_string(&sb, storage->name);
             strbuf_printf(&sb,
-                "maps['%s']=(function(){"
+                "]=(function(){"
                 "var d=_mapData[%u];"
                 "var m=_mapValid[%u];"
                 "var bufSize=%u;"
@@ -2055,7 +2112,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "}"
                 "};"
                 "})();",
-                storage->name,
                 i, i,
                 ring->buffer_size,
                 ring->max_event_size);
@@ -2083,8 +2139,10 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
              * add() accumulates delta for atomic application after run.
              * get() returns current value + accumulated delta.
              * set() records the new value for post-run assignment. */
+            strbuf_puts(&sb, "maps[");
+            strbuf_append_js_string(&sb, storage->name);
             strbuf_printf(&sb,
-                "maps['%s']=(function(){"
+                "]=(function(){"
                 "var d=_mapData[%u];"
                 "var max=%u;"
                 /* Helper: convert 64-bit to hi/lo parts */
@@ -2140,7 +2198,6 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
                 "}"
                 "};"
                 "})();",
-                storage->name,
                 i,
                 ctr->max_entries);
         }

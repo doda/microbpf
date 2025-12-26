@@ -480,6 +480,47 @@ static int parse_capabilities(cbor_reader_t *r, uint32_t *caps) {
     return 0;
 }
 
+/*
+ * Validate a map name.
+ * Valid map names must:
+ * - Be non-empty
+ * - Contain only printable ASCII characters (0x20-0x7E)
+ * - Not contain control characters, quotes, or backslashes
+ *   (these would cause issues in generated JS code)
+ *
+ * Returns 0 if valid, -1 if invalid.
+ */
+static int validate_map_name(const char *name) {
+    if (!name || name[0] == '\0') {
+        return -1;  /* Empty name */
+    }
+
+    for (const char *p = name; *p != '\0'; p++) {
+        unsigned char c = (unsigned char)*p;
+
+        /* Reject control characters (0x00-0x1F) and DEL (0x7F) */
+        if (c < 0x20 || c == 0x7F) {
+            return -1;
+        }
+
+        /* Reject characters that are problematic in JS string contexts:
+         * - Single quote ('), double quote ("), backslash (\)
+         * These could be used for JS injection if escaping is somehow bypassed.
+         * It's safer to reject them at parse time.
+         */
+        if (c == '\'' || c == '"' || c == '\\') {
+            return -1;
+        }
+
+        /* Reject characters above 0x7E (extended ASCII / non-ASCII) */
+        if (c > 0x7E) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int parse_map_def(cbor_reader_t *r, mbpf_map_def_t *map) {
     uint64_t map_len;
     if (cbor_read_map_length(r, &map_len) != 0) return -1;
@@ -491,6 +532,8 @@ static int parse_map_def(cbor_reader_t *r, mbpf_map_def_t *map) {
 
         if (strcmp(key, "name") == 0) {
             if (cbor_read_text_string(r, map->name, sizeof(map->name)) != 0) return -1;
+            /* Validate map name to prevent JS injection */
+            if (validate_map_name(map->name) != 0) return -1;
         } else if (strcmp(key, "type") == 0) {
             uint64_t val;
             if (cbor_read_unsigned(r, &val) != 0) return -1;
@@ -997,6 +1040,8 @@ static int json_parse_map_def(json_reader_t *r, mbpf_map_def_t *map) {
 
         if (strcmp(key, "name") == 0) {
             if (json_read_string(r, map->name, sizeof(map->name)) != 0) return -1;
+            /* Validate map name to prevent JS injection */
+            if (validate_map_name(map->name) != 0) return -1;
         } else if (strcmp(key, "type") == 0) {
             uint64_t val;
             if (json_read_number(r, &val) != 0) return -1;
