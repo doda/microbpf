@@ -1286,5 +1286,259 @@
       "Add concurrent writer tests to validate behavior"
     ],
     "passes": true
+  },
+  {
+    "id": "fix-new-lru-compile-error",
+    "category": "bug",
+    "description": "Fix the undeclared new_lru reference in map resize code so mbpf_runtime.c builds cleanly.",
+    "steps": [
+      "Identify the intended new_lru variable/type in resize_map_storage and define/initialize it correctly",
+      "Build libmbpf.a and confirm mbpf_runtime.c compiles without warnings/errors",
+      "Run a targeted map-related test to confirm no runtime regressions"
+    ],
+    "scope": [
+      "src/mbpf_runtime.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "fix-manifest-json-size-off-by-one",
+    "category": "bug",
+    "description": "Align mbpf_manifest_json_size and mbpf_manifest_generate_json to use the same required buffer size including the NUL terminator.",
+    "steps": [
+      "Update mbpf_manifest_json_size or generate_json to report/accept the same size convention",
+      "Add a unit test that allocates exactly the reported size and succeeds",
+      "Run manifest generator tests and fix any regressions"
+    ],
+    "scope": [
+      "src/mbpf_manifest_gen.c",
+      "tests/test_manifest_gen.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "enforce-budgets-required-keys",
+    "category": "bug",
+    "description": "Reject manifests that omit required budgets.max_steps or budgets.max_helpers during parse/load.",
+    "steps": [
+      "Update manifest parsing to require both keys when budgets is present",
+      "Add negative tests for missing max_steps/max_helpers",
+      "Run package/manifest tests and fix failures"
+    ],
+    "scope": [
+      "src/mbpf_package.c",
+      "tests/test_program_load_validation.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "validate-ctx-abi-version-at-run",
+    "category": "bug",
+    "description": "Ensure mbpf_run validates ctx_blob abi_version against the program’s required hook_ctx_abi_version before execution.",
+    "steps": [
+      "Add ABI version checks when constructing ctx objects from ctx_blob",
+      "Return a safe default without executing when the ABI version mismatches",
+      "Add a test that passes a mismatched ctx_blob version and expects rejection"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "src/mbpf_runtime.c",
+      "tests/test_context_object.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "fix-ctx-data-len-after-read-fn",
+    "category": "bug",
+    "description": "Make ctx.data_len reflect the actual readable byte count when read_fn yields fewer bytes than the ctx blob advertises.",
+    "steps": [
+      "Adjust snapshot or ctx construction so data_len matches the copied/readable buffer size",
+      "Add a test where read_fn returns fewer bytes and verify ctx.data_len equals that size",
+      "Run hook/context tests and fix any regressions"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "src/mbpf_runtime.c",
+      "tests/test_context_read_methods.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "fix-mbpf-log-allocation-free",
+    "category": "bug",
+    "description": "Remove JS heap allocations from mbpf.log’s success path to comply with the allocation-free helper contract.",
+    "steps": [
+      "Refactor mbpf.log to avoid string concatenation/String() allocations on success",
+      "Add a helper test that detects allocations during mbpf.log calls",
+      "Run helper/typed-array tests and fix regressions"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "src/mbpf_runtime.c",
+      "tests/test_allocation_free_helpers.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "toolchain-assemble-signing-test-builds-tools",
+    "category": "test",
+    "description": "Ensure assemble/signing integration tests build or locate mbpf_assemble and mbpf_sign before running.",
+    "steps": [
+      "Update test scripts to build required tool binaries or skip with a clear, actionable error",
+      "Run tests/test_toolchain_assemble.sh and tests/test_toolchain_signing.sh",
+      "Fix any failures and re-run the scripts"
+    ],
+    "scope": [
+      "tests/test_toolchain_assemble.sh",
+      "tests/test_toolchain_signing.sh"
+    ],
+    "passes": false
+  },
+  {
+    "id": "toolchain-signing-loads-signed-package",
+    "category": "test",
+    "description": "Extend signing integration test to load a signed .mbpf via mbpf_program_load and validate end-to-end load success.",
+    "steps": [
+      "Update tests/test_toolchain_signing.sh to run loader on the signed artifact",
+      "Run the updated script and address any failures in loader/signing flow",
+      "Re-run the test to confirm end-to-end pass"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "tests/test_toolchain_signing.sh"
+    ],
+    "passes": false
+  },
+  {
+    "id": "assemble-test-endianness-strings",
+    "category": "test",
+    "description": "Update mbpf assemble tests to use spec-compliant endianness strings (\"little\"/\"big\") and validate parsing.",
+    "steps": [
+      "Change test manifest data in tests/test_mbpf_assemble.c to use string endianness",
+      "Run the assemble unit test and fix any parsing issues",
+      "Re-run the test to confirm spec-compliant behavior"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "tests/test_mbpf_assemble.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "add-read-fn-coverage-across-hooks",
+    "category": "test",
+    "description": "Add integration tests that exercise read_fn paths and short-read behavior for TRACEPOINT/SECURITY/CUSTOM contexts.",
+    "steps": [
+      "Add tests that supply read_fn contexts and validate ctx.read* behavior across hook types",
+      "Include a short-read case and verify data_len semantics and exceptions",
+      "Run the new tests, fix failures, and re-run"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "tests/test_hook_tracepoint.c",
+      "tests/test_hook_security.c",
+      "tests/test_hook_custom.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "percpu-map-persistence-integration",
+    "category": "test",
+    "description": "Add integration coverage for per-CPU map persistence across program updates.",
+    "steps": [
+      "Extend map persistence tests to include a per-CPU map populated before program update",
+      "Run the test and fix any persistence issues found",
+      "Re-run the test to confirm per-CPU map data survives updates"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "tests/test_map_persistence.c",
+      "tests/test_percpu_map.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "map-iteration-lru-percpu-tests",
+    "category": "test",
+    "description": "Add integration tests for nextKey iteration on LRU and per-CPU hash maps.",
+    "steps": [
+      "Add new test cases covering nextKey on LRU and per-CPU hash maps",
+      "Run the iteration tests and fix any iterator issues",
+      "Re-run to confirm coverage passes"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "tests/test_map_iteration.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "helper-js-allocation-detection",
+    "category": "test",
+    "description": "Add a test that detects JS heap allocations during helper success paths (beyond malloc/free tracking).",
+    "steps": [
+      "Add a helper test that triggers GC/allocation counters during helper calls",
+      "Run the test suite and fix helper implementations that allocate",
+      "Re-run to confirm allocation-free contract is enforced"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "tests/test_allocation_free_helpers.c",
+      "tests/test_no_dynamic_alloc.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "typed-array-pointer-invalidation-test",
+    "category": "test",
+    "description": "Add a test that validates typed-array pointer ephemerality and no-allocation-after-pointer rule.",
+    "steps": [
+      "Extend typed-array shim tests to grab a pointer, force an allocation, and validate invalidation behavior",
+      "Run typed-array tests and address any failures",
+      "Re-run to confirm pointer-safety invariants are enforced"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "tests/test_typed_array_shim.c"
+    ],
+    "passes": false
+  },
+  {
+    "id": "deferred-queue-synchronization",
+    "category": "reliability",
+    "description": "Make deferred execution queue operations concurrency-safe for enqueue/drain paths.",
+    "steps": [
+      "Add proper locking or atomics around queue count/head/tail access",
+      "Add a concurrency stress test for deferred enqueue/drain",
+      "Run deferred queue tests and fix any races"
+    ],
+    "depends_on": [
+      "fix-new-lru-compile-error"
+    ],
+    "scope": [
+      "src/mbpf_runtime.c",
+      "tests/test_deferred_queue.c"
+    ],
+    "passes": false
   }
 ]
