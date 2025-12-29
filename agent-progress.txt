@@ -133,3 +133,13 @@ docs-package-format: documented .mbpf package format for tooling authors.
 2025-12-26 ring-buffer-sync-bounds: reviewed ring buffer sync bounds, chunking, and size validation.
 2025-12-26 map-write-concurrency: reviewed map writer serialization and concurrency tests.
 [2025-12-29T23:24:50.536Z] Audit (codex): FAIL, 7 area(s), 15 new, lens=integration-testing.
+- 2025-12-29 fix-new-lru-compile-error: PASS; removed stray LRU writer lock init in per-CPU array resize and cleaned map name length warning.
+- Updated map resize path and JS maps object sizing logic.
+- Files changed: src/mbpf_runtime.c.
+- Task status update: task_list.json set fix-new-lru-compile-error passes=true.
+- Build: make -B build/libmbpf.a (mbpf_runtime.c compiles cleanly; deps/mquickjs still emit existing warnings).
+- Tests: make build/test_lru_hash_map && ./build/test_lru_hash_map (PASS).
+- Init: ./init.sh --quick failed in test_program_unload (mbpf_fini_called_if_defined, mbpf_fini_throws_exception).
+- Challenge: init.sh --quick still failing due to program unload tests.
+- Resolution: not addressed in this session; failure persists for follow-up.
+- Follow-up: investigate mbpf_program_load failures in tests/test_program_unload.c when mbpf_fini is defined.

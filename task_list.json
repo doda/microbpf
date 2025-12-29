@@ -1299,7 +1299,7 @@
     "scope": [
       "src/mbpf_runtime.c"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "fix-manifest-json-size-off-by-one",
@@ -1334,7 +1334,7 @@
   {
     "id": "validate-ctx-abi-version-at-run",
     "category": "bug",
-    "description": "Ensure mbpf_run validates ctx_blob abi_version against the program’s required hook_ctx_abi_version before execution.",
+    "description": "Ensure mbpf_run validates ctx_blob abi_version against the program\u2019s required hook_ctx_abi_version before execution.",
     "steps": [
       "Add ABI version checks when constructing ctx objects from ctx_blob",
       "Return a safe default without executing when the ABI version mismatches",
@@ -1370,7 +1370,7 @@
   {
     "id": "fix-mbpf-log-allocation-free",
     "category": "bug",
-    "description": "Remove JS heap allocations from mbpf.log’s success path to comply with the allocation-free helper contract.",
+    "description": "Remove JS heap allocations from mbpf.log\u2019s success path to comply with the allocation-free helper contract.",
     "steps": [
       "Refactor mbpf.log to avoid string concatenation/String() allocations on success",
       "Add a helper test that detects allocations during mbpf.log calls",
