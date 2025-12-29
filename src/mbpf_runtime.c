@@ -1392,7 +1392,7 @@ static int setup_maps_object(JSContext *ctx, mbpf_program_t *prog, uint32_t inst
     for (uint32_t i = 0; i < prog->map_count; i++) {
         mbpf_map_storage_t *storage = &prog->maps[i];
         /* Add extra for map name (up to 256 chars) */
-        size_t name_len = storage->name ? strlen(storage->name) : 0;
+        size_t name_len = strlen(storage->name);
         if (storage->type == MBPF_MAP_TYPE_LRU) {
             initial_size += 8192 + name_len;  /* LRU hash maps need ~8KB for LRU list methods */
         } else if (storage->type == MBPF_MAP_TYPE_RING) {
@@ -4805,7 +4805,6 @@ static int resize_map_storage(mbpf_map_storage_t *new_storage,
                     memcpy(new_pca->valid[cpu], old_pca->valid[cpu], copy_entries);
                 }
             }
-            pthread_mutex_init(&new_lru->writer_lock, NULL);
             break;
         }
 
