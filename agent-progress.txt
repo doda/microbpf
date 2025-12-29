@@ -132,3 +132,4 @@ docs-package-format: documented .mbpf package format for tooling authors.
 2025-12-26 runtime-map-name-escaping: reviewed map name validation/escaping and tests.
 2025-12-26 ring-buffer-sync-bounds: reviewed ring buffer sync bounds, chunking, and size validation.
 2025-12-26 map-write-concurrency: reviewed map writer serialization and concurrency tests.
+[2025-12-29T23:24:50.536Z] Audit (codex): FAIL, 7 area(s), 15 new, lens=integration-testing.
