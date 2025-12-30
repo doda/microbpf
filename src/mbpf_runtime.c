@@ -3921,6 +3921,10 @@ static JSValue update_reusable_ctx(mbpf_instance_t *inst, mbpf_hook_id_t hook,
                         }
                     }
                 }
+                if (custom_ctx->fields && custom_ctx->field_count > 0) {
+                    free(owned_data);
+                    return JS_NULL;
+                }
             }
             break;
         default:
@@ -3967,7 +3971,7 @@ static JSValue update_reusable_ctx(mbpf_instance_t *inst, mbpf_hook_id_t hook,
 
             written = snprintf(p, remaining,
                 "s.ifindex=%u;s.pkt_len=%u;s.data_len=%u;s.l2_proto=%u;s.flags=%u;",
-                net_ctx->ifindex, net_ctx->pkt_len, net_ctx->data_len,
+                net_ctx->ifindex, net_ctx->pkt_len, data_len,
                 (uint32_t)net_ctx->l2_proto, (uint32_t)net_ctx->flags);
             if (written < 0 || (size_t)written >= remaining) goto fail;
             p += written;
@@ -4008,7 +4012,7 @@ static JSValue update_reusable_ctx(mbpf_instance_t *inst, mbpf_hook_id_t hook,
                 tp_ctx->tracepoint_id,
                 (unsigned long long)tp_ctx->timestamp,
                 tp_ctx->cpu, tp_ctx->pid,
-                tp_ctx->data_len, (uint32_t)tp_ctx->flags);
+                data_len, (uint32_t)tp_ctx->flags);
             if (written < 0 || (size_t)written >= remaining) goto fail;
             p += written;
             remaining -= (size_t)written;
@@ -4028,7 +4032,7 @@ static JSValue update_reusable_ctx(mbpf_instance_t *inst, mbpf_hook_id_t hook,
                 "s.subject_id=%u;s.object_id=%u;s.action=%u;"
                 "s.data_len=%u;s.flags=%u;",
                 sec_ctx->subject_id, sec_ctx->object_id,
-                sec_ctx->action, sec_ctx->data_len, (uint32_t)sec_ctx->flags);
+                sec_ctx->action, data_len, (uint32_t)sec_ctx->flags);
             if (written < 0 || (size_t)written >= remaining) goto fail;
             p += written;
             remaining -= (size_t)written;
@@ -4048,7 +4052,7 @@ static JSValue update_reusable_ctx(mbpf_instance_t *inst, mbpf_hook_id_t hook,
                 "s.custom_hook_id=%u;s.schema_version=%u;s.field_count=%u;"
                 "s.data_len=%u;s.flags=%u;",
                 custom_ctx->custom_hook_id, custom_ctx->schema_version,
-                custom_ctx->field_count, custom_ctx->data_len,
+                custom_ctx->field_count, data_len,
                 (uint32_t)custom_ctx->flags);
             if (written < 0 || (size_t)written >= remaining) goto fail;
             p += written;
@@ -5587,7 +5591,7 @@ static JSValue create_net_rx_ctx(JSContext *ctx, const void *ctx_blob, size_t ct
         "Object.defineProperty(o,'flags',{get:function(){return %u;},set:function(){}});",
         net_ctx->ifindex,
         net_ctx->pkt_len,
-        net_ctx->data_len,
+        data_len,
         (uint32_t)net_ctx->l2_proto,
         (uint32_t)net_ctx->flags);
     p += written;
@@ -5805,7 +5809,7 @@ static JSValue create_tracepoint_ctx(JSContext *ctx, const void *ctx_blob, size_
         (unsigned long long)tp_ctx->timestamp,
         tp_ctx->cpu,
         tp_ctx->pid,
-        tp_ctx->data_len,
+        data_len,
         (uint32_t)tp_ctx->flags);
     p += written;
     remaining -= written;
@@ -5976,7 +5980,7 @@ static JSValue create_security_ctx(JSContext *ctx, const void *ctx_blob, size_t 
         sec_ctx->subject_id,
         sec_ctx->object_id,
         sec_ctx->action,
-        sec_ctx->data_len,
+        data_len,
         (uint32_t)sec_ctx->flags);
     p += written;
     remaining -= written;
@@ -6155,7 +6159,7 @@ static JSValue create_custom_ctx(JSContext *ctx, const void *ctx_blob, size_t ct
         custom_ctx->custom_hook_id,
         custom_ctx->schema_version,
         custom_ctx->field_count,
-        custom_ctx->data_len,
+        data_len,
         (uint32_t)custom_ctx->flags);
     p += written;
     remaining -= written;

@@ -1365,7 +1365,7 @@
       "src/mbpf_runtime.c",
       "tests/test_context_read_methods.c"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "fix-mbpf-log-allocation-free",

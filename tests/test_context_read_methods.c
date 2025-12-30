@@ -159,6 +159,16 @@ static const uint8_t test_packet[] = {
     0xAA, 0xBB, 0xCC, 0xDD                           /* bytes 16-19 */
 };
 
+static int short_read_fn(const void *ctx_blob, uint32_t off, uint32_t len, uint8_t *dst) {
+    (void)ctx_blob;
+    if (off != 0 || !dst || len == 0) {
+        return 0;
+    }
+    const uint32_t to_copy = len < 4 ? len : 4;
+    memcpy(dst, test_packet, to_copy);
+    return (int)to_copy;
+}
+
 /* ============================================================================
  * Test Cases - context-read-methods
  * ============================================================================ */
@@ -576,6 +586,55 @@ TEST(readBytes_truncated) {
 }
 
 /*
+ * Test 11: read_fn returns fewer bytes than advertised data_len
+ */
+TEST(read_fn_short_read_updates_data_len) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    if (ctx === null) return -1;\n"
+        "    return ctx.data_len;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[8192];
+    size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len, MBPF_HOOK_NET_RX);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    ASSERT_EQ(err, MBPF_OK);
+
+    err = mbpf_program_attach(rt, prog, MBPF_HOOK_NET_RX);
+    ASSERT_EQ(err, MBPF_OK);
+
+    mbpf_ctx_net_rx_v1_t ctx_blob = {
+        .abi_version = 1,
+        .ifindex = 1,
+        .pkt_len = 64,
+        .data_len = 8,
+        .l2_proto = 0x0800,
+        .flags = 0,
+        .data = NULL,
+        .read_fn = short_read_fn
+    };
+
+    int32_t out_rc = -999;
+    err = mbpf_run(rt, MBPF_HOOK_NET_RX, &ctx_blob, sizeof(ctx_blob), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 4);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
  * Test 10: Out-of-bounds readU8 throws exception
  */
 TEST(readU8_out_of_bounds) {
@@ -984,6 +1043,7 @@ int main(int argc, char *argv[]) {
     RUN_TEST(readBytes_basic);
     RUN_TEST(readBytes_at_offset);
     RUN_TEST(readBytes_truncated);
+    RUN_TEST(read_fn_short_read_updates_data_len);
 
     printf("\nOut-of-bounds error tests:\n");
     RUN_TEST(readU8_out_of_bounds);
