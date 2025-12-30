@@ -199,3 +199,13 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Tests: ./init.sh (PASS).
 - Challenges: custom hook field accessor tests failed due to reusable ctx lacking dynamic fields.
 - Resolution: fallback to per-invocation ctx creation for custom hooks with fields.
+- 2025-12-30 fix-mbpf-log-allocation-free: PASS.
+- Refactored mbpf.log helper to avoid String/concat and select prefixes without array indexing.
+- Added JS heap usage accessor and instance heap usage API for allocation checks.
+- Added allocation-free mbpf.log test comparing heap growth baseline vs log runs.
+- Files changed: src/mbpf_runtime.c, tests/test_allocation_free_helpers.c, include/mbpf.h, deps/mquickjs/mquickjs.c, deps/mquickjs/mquickjs.h, task_list.json.
+- Tests: make build/test_allocation_free_helpers && ./build/test_allocation_free_helpers (PASS).
+- Tests: make build/test_helper_log && ./build/test_helper_log (PASS).
+- Tests: make build/test_typed_array_shim && ./build/test_typed_array_shim (PASS).
+- Init: ./init.sh (PASS).
+- Challenges: allocation test initially failed due to baseline heap growth; resolved by measuring log vs no-log growth.
