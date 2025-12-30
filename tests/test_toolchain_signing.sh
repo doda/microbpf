@@ -6,7 +6,8 @@
 # 1. Generate Ed25519 keypair
 # 2. Sign package bytes (excluding signature section)
 # 3. Append MBPF_SEC_SIG section with signature
-# 4. Verify signed package can be loaded
+# 4. Verify signature
+# 5. Load signed package via mbpf_program_load
 
 set -e
 
@@ -30,6 +31,32 @@ skip_test() {
 ensure_make() {
     if ! command -v make >/dev/null 2>&1; then
         skip_test "make not found; install build tools or run on a machine with make."
+    fi
+}
+
+ensure_cc() {
+    if command -v cc >/dev/null 2>&1; then
+        CC=cc
+        return 0
+    fi
+    if command -v gcc >/dev/null 2>&1; then
+        CC=gcc
+        return 0
+    fi
+    skip_test "C compiler not found; install gcc/clang or run on a machine with a C compiler."
+}
+
+ensure_lib() {
+    if [ -f "$BUILD_DIR/libmbpf.a" ]; then
+        return 0
+    fi
+    ensure_make
+    echo "Info: Building libmbpf.a..."
+    if ! make -C "$PROJECT_ROOT" build/libmbpf.a; then
+        skip_test "failed to build libmbpf.a; run 'make build/libmbpf.a' in $PROJECT_ROOT."
+    fi
+    if [ ! -f "$BUILD_DIR/libmbpf.a" ]; then
+        skip_test "expected $BUILD_DIR/libmbpf.a after build; run 'make build/libmbpf.a' in $PROJECT_ROOT."
     fi
 }
 
@@ -154,8 +181,98 @@ echo "Step 4: Verify package signature..."
 echo "  PASS"
 echo ""
 
-# Step 5: Verify that verification fails with wrong key
-echo "Step 5: Verify that wrong key is rejected..."
+# Step 5: Load signed package via mbpf_program_load
+echo "Step 5: Load signed package via mbpf_program_load..."
+ensure_cc
+ensure_lib
+cat > "$TMP_DIR/load_signed.c" <<'EOF'
+#include "mbpf.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s <package.mbpf>\n", argv[0]);
+        return 2;
+    }
+
+    const char *path = argv[1];
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        perror("fopen");
+        return 1;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        perror("fseek");
+        fclose(f);
+        return 1;
+    }
+    long len = ftell(f);
+    if (len <= 0) {
+        fprintf(stderr, "invalid package length\n");
+        fclose(f);
+        return 1;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        perror("fseek");
+        fclose(f);
+        return 1;
+    }
+
+    uint8_t *buf = malloc((size_t)len);
+    if (!buf) {
+        fprintf(stderr, "out of memory\n");
+        fclose(f);
+        return 1;
+    }
+    size_t read_len = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    if (read_len != (size_t)len) {
+        fprintf(stderr, "short read\n");
+        free(buf);
+        return 1;
+    }
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    if (!rt) {
+        fprintf(stderr, "mbpf_runtime_init failed\n");
+        free(buf);
+        return 1;
+    }
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, buf, (size_t)len, NULL, &prog);
+    if (err != MBPF_OK) {
+        fprintf(stderr, "mbpf_program_load failed: %d\n", err);
+        mbpf_runtime_shutdown(rt);
+        free(buf);
+        return 1;
+    }
+
+    err = mbpf_program_unload(rt, prog);
+    if (err != MBPF_OK) {
+        fprintf(stderr, "mbpf_program_unload failed: %d\n", err);
+        mbpf_runtime_shutdown(rt);
+        free(buf);
+        return 1;
+    }
+
+    mbpf_runtime_shutdown(rt);
+    free(buf);
+    return 0;
+}
+EOF
+
+"$CC" -I"$PROJECT_ROOT/include" -L"$BUILD_DIR" \
+    -o "$TMP_DIR/load_signed" "$TMP_DIR/load_signed.c" -lmbpf -lm
+
+"$TMP_DIR/load_signed" "$TMP_DIR/signed.mbpf"
+echo "  PASS"
+echo ""
+
+# Step 6: Verify that verification fails with wrong key
+echo "Step 6: Verify that wrong key is rejected..."
 "$TOOLS_DIR/mbpf_sign" keygen -o "$TMP_DIR/wrong_keypair.key"
 "$TOOLS_DIR/mbpf_sign" pubkey -k "$TMP_DIR/wrong_keypair.key" -o "$TMP_DIR/wrong_public.key"
 
@@ -166,8 +283,8 @@ fi
 echo "  PASS (wrong key correctly rejected)"
 echo ""
 
-# Step 6: Verify that tampered package is rejected
-echo "Step 6: Verify that tampered package is rejected..."
+# Step 7: Verify that tampered package is rejected
+echo "Step 7: Verify that tampered package is rejected..."
 cp "$TMP_DIR/signed.mbpf" "$TMP_DIR/tampered.mbpf"
 # Flip a byte in the middle of the package
 python3 -c "
@@ -186,8 +303,8 @@ fi
 echo "  PASS (tampered package correctly rejected)"
 echo ""
 
-# Step 7: Verify that unsigned package is rejected
-echo "Step 7: Verify that unsigned package is rejected..."
+# Step 8: Verify that unsigned package is rejected
+echo "Step 8: Verify that unsigned package is rejected..."
 if "$TOOLS_DIR/mbpf_sign" verify -k "$TMP_DIR/public.key" -i "$TMP_DIR/unsigned.mbpf" 2>/dev/null; then
     echo "FAIL: Unsigned package should be rejected"
     exit 1

@@ -1415,7 +1415,7 @@
     "scope": [
       "tests/test_toolchain_signing.sh"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "assemble-test-endianness-strings",
