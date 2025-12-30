@@ -1451,7 +1451,7 @@
       "tests/test_hook_security.c",
       "tests/test_hook_custom.c"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "percpu-map-persistence-integration",
