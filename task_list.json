@@ -1329,7 +1329,7 @@
       "src/mbpf_package.c",
       "tests/test_program_load_validation.c"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "validate-ctx-abi-version-at-run",

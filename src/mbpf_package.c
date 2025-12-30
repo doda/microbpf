@@ -436,6 +436,8 @@ static int parse_target(cbor_reader_t *r, mbpf_target_t *target) {
 static int parse_budgets(cbor_reader_t *r, mbpf_budgets_t *budgets) {
     uint64_t map_len;
     if (cbor_read_map_length(r, &map_len) != 0) return -1;
+    bool has_max_steps = false;
+    bool has_max_helpers = false;
 
     for (uint64_t i = 0; i < map_len; i++) {
         char key[32];
@@ -445,10 +447,12 @@ static int parse_budgets(cbor_reader_t *r, mbpf_budgets_t *budgets) {
             uint64_t val;
             if (cbor_read_unsigned(r, &val) != 0) return -1;
             budgets->max_steps = (uint32_t)val;
+            has_max_steps = true;
         } else if (strcmp(key, "max_helpers") == 0) {
             uint64_t val;
             if (cbor_read_unsigned(r, &val) != 0) return -1;
             budgets->max_helpers = (uint32_t)val;
+            has_max_helpers = true;
         } else if (strcmp(key, "max_wall_time_us") == 0) {
             uint64_t val;
             if (cbor_read_unsigned(r, &val) != 0) return -1;
@@ -457,6 +461,7 @@ static int parse_budgets(cbor_reader_t *r, mbpf_budgets_t *budgets) {
             if (cbor_skip_value(r) != 0) return -1;
         }
     }
+    if (!has_max_steps || !has_max_helpers) return -1;
     return 0;
 }
 
@@ -958,8 +963,10 @@ static int json_parse_budgets(json_reader_t *r, mbpf_budgets_t *budgets) {
     json_skip_whitespace(r);
     if (r->pos < r->len && r->data[r->pos] == '}') {
         r->pos++;
-        return 0;
+        return -1;
     }
+    bool has_max_steps = false;
+    bool has_max_helpers = false;
     while (1) {
         char key[32];
         if (json_read_string(r, key, sizeof(key)) != 0) return -1;
@@ -969,10 +976,12 @@ static int json_parse_budgets(json_reader_t *r, mbpf_budgets_t *budgets) {
             uint64_t val;
             if (json_read_number(r, &val) != 0) return -1;
             budgets->max_steps = (uint32_t)val;
+            has_max_steps = true;
         } else if (strcmp(key, "max_helpers") == 0) {
             uint64_t val;
             if (json_read_number(r, &val) != 0) return -1;
             budgets->max_helpers = (uint32_t)val;
+            has_max_helpers = true;
         } else if (strcmp(key, "max_wall_time_us") == 0) {
             uint64_t val;
             if (json_read_number(r, &val) != 0) return -1;
@@ -986,6 +995,7 @@ static int json_parse_budgets(json_reader_t *r, mbpf_budgets_t *budgets) {
             r->pos++;
         } else if (r->pos < r->len && r->data[r->pos] == '}') {
             r->pos++;
+            if (!has_max_steps || !has_max_helpers) return -1;
             return 0;
         } else {
             return -1;
