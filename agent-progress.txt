@@ -229,3 +229,11 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Resolution: moved -lmbpf/-lm after the source file in tests/test_toolchain_signing.sh.
 - Follow-ups: none.
 - Tests: ./init.sh (PASS).
+- assemble-test-endianness-strings: PASS.
+- Updated assemble test manifest to emit string endianness values ("little"/"big").
+- Files changed: tests/test_mbpf_assemble.c, task_list.json.
+- Tests: make build/test_mbpf_assemble && ./build/test_mbpf_assemble (PASS).
+- Tests: ./init.sh (PASS).
+- Challenges: init.sh --quick initial timeout during setup.
+- Resolution: reran init.sh --quick with higher timeout; init.sh completed.
+- Follow-ups: none.

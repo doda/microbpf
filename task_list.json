@@ -1432,7 +1432,7 @@
     "scope": [
       "tests/test_mbpf_assemble.c"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "add-read-fn-coverage-across-hooks",
