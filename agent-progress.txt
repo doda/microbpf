@@ -220,3 +220,12 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenges: missing tool binaries at test start.
 - Resolution: build via make targets inside tests before execution.
 - Tests: ./init.sh (PASS; reported a link error building build/test_rom_stdlib but init.sh completed successfully).
+- toolchain-signing-loads-signed-package: PASS.
+- Added loader step to signing integration script that compiles a small C harness and calls mbpf_program_load on the signed .mbpf.
+- Files changed: tests/test_toolchain_signing.sh, task_list.json.
+- Tests: tests/test_toolchain_signing.sh (PASS).
+- Init: ./init.sh --quick (PASS).
+- Challenge: loader compile failed due to library order in the link line.
+- Resolution: moved -lmbpf/-lm after the source file in tests/test_toolchain_signing.sh.
+- Follow-ups: none.
+- Tests: ./init.sh (PASS).
