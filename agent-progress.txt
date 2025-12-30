@@ -176,3 +176,12 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Codex working session error: Codex working produced no agent messages
 - Auto-commit created by harness for uncommitted changes.
 - Next session: review the "Auto-commit uncommitted changes (working)" commit before resuming.
+- 2025-12-30: validate-ctx-abi-version-at-run PASS.
+- Added ctx ABI version guard in mbpf_run/run_on_instance to skip execution on mismatch.
+- Added context ABI mismatch test to ensure safe default returned without execution.
+- Files changed: src/mbpf_runtime.c, tests/test_context_object.c, task_list.json.
+- Tests: make build/test_context_object && ./build/test_context_object (PASS).
+- Tests: ./init.sh (PASS).
+- Challenges: init.sh --quick initial timeout; reran with longer timeout.
+- Resolution: reran init.sh --quick with higher timeout and full init.sh after changes.
+- Follow-ups: none.
