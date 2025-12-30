@@ -7107,6 +7107,14 @@ void JS_DumpValue(JSContext *ctx, const char *str,
     JS_DumpValueF(ctx, str, val, 0);
 }
 
+size_t JS_GetHeapUsage(JSContext *ctx)
+{
+    if (!ctx) {
+        return 0;
+    }
+    return (size_t)(ctx->heap_free - ctx->heap_base);
+}
+
 
 /**************************************************/
 /* JS parser */

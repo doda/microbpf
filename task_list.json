@@ -1383,7 +1383,7 @@
       "src/mbpf_runtime.c",
       "tests/test_allocation_free_helpers.c"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "toolchain-assemble-signing-test-builds-tools",

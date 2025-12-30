@@ -331,6 +331,7 @@ int mbpf_program_stats(mbpf_program_t *prog, mbpf_stats_t *out_stats);
 uint32_t mbpf_program_instance_count(mbpf_program_t *prog);
 size_t mbpf_program_instance_heap_size(mbpf_program_t *prog, uint32_t idx);
 mbpf_instance_t *mbpf_program_get_instance(mbpf_program_t *prog, uint32_t idx);
+size_t mbpf_instance_heap_used(mbpf_instance_t *inst);
 
 /* Version info */
 const char *mbpf_version_string(void);

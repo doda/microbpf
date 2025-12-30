@@ -44,7 +44,8 @@
 
 /* Build manifest with specified hook and capabilities */
 static size_t build_manifest(uint8_t *buf, size_t cap, int hook_type,
-                             const char *capabilities, const char *maps) {
+                             const char *capabilities, const char *maps,
+                             uint32_t max_helpers) {
     char json[4096];
     if (maps) {
         snprintf(json, sizeof(json),
@@ -57,13 +58,13 @@ static size_t build_manifest(uint8_t *buf, size_t cap, int hook_type,
             "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
-            "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
+            "\"budgets\":{\"max_steps\":100000,\"max_helpers\":%u},"
             "\"capabilities\":[%s],"
             "\"maps\":[%s]"
             "}",
             hook_type,
             mbpf_runtime_word_size(), mbpf_runtime_endianness(),
-            capabilities, maps);
+            max_helpers, capabilities, maps);
     } else {
         snprintf(json, sizeof(json),
             "{"
@@ -75,12 +76,12 @@ static size_t build_manifest(uint8_t *buf, size_t cap, int hook_type,
             "\"target\":{\"word_size\":%u,\"endianness\":%u},"
             "\"mbpf_api_version\":1,"
             "\"heap_size\":65536,"
-            "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
+            "\"budgets\":{\"max_steps\":100000,\"max_helpers\":%u},"
             "\"capabilities\":[%s]"
             "}",
             hook_type,
             mbpf_runtime_word_size(), mbpf_runtime_endianness(),
-            capabilities);
+            max_helpers, capabilities);
     }
     size_t len = strlen(json);
     if (len > cap) return 0;
@@ -92,12 +93,12 @@ static size_t build_manifest(uint8_t *buf, size_t cap, int hook_type,
 static size_t build_mbpf_package(uint8_t *buf, size_t cap,
                                   const uint8_t *bytecode, size_t bc_len,
                                   int hook_type, const char *capabilities,
-                                  const char *maps) {
+                                  const char *maps, uint32_t max_helpers) {
     if (cap < 256) return 0;
 
     uint8_t manifest[4096];
     size_t manifest_len = build_manifest(manifest, sizeof(manifest),
-                                          hook_type, capabilities, maps);
+                                          hook_type, capabilities, maps, max_helpers);
     if (manifest_len == 0) return 0;
 
     uint32_t header_size = 20 + 2 * 16;
@@ -177,6 +178,54 @@ static uint8_t *compile_js(const char *js_code, size_t *out_len) {
     return bytecode;
 }
 
+static int measure_heap_growth(const char *js_code, uint32_t max_helpers,
+                               size_t *out_growth) {
+    size_t bc_len;
+    uint8_t *bytecode = compile_js(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[16384];
+    size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL, max_helpers);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    ASSERT_EQ(err, MBPF_OK);
+    err = mbpf_program_attach(rt, prog, MBPF_HOOK_TRACEPOINT);
+    ASSERT_EQ(err, MBPF_OK);
+
+    int32_t rc = -99;
+    err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, NULL, 0, &rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(rc, 0);
+
+    mbpf_instance_t *inst = mbpf_program_get_instance(prog, 0);
+    ASSERT_NOT_NULL(inst);
+    size_t heap_before = mbpf_instance_heap_used(inst);
+
+    for (int i = 0; i < 10; i++) {
+        rc = -99;
+        err = mbpf_run(rt, MBPF_HOOK_TRACEPOINT, NULL, 0, &rc);
+        ASSERT_EQ(err, MBPF_OK);
+        ASSERT_EQ(rc, 0);
+    }
+
+    size_t heap_after = mbpf_instance_heap_used(inst);
+    if (out_growth) {
+        *out_growth = (heap_after >= heap_before) ? (heap_after - heap_before) : 0;
+    }
+
+    mbpf_program_detach(rt, prog, MBPF_HOOK_TRACEPOINT);
+    mbpf_program_unload(rt, prog);
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
 /* ============================================================================
  * Test Cases - mbpf.* helper return types
  * ============================================================================ */
@@ -198,7 +247,7 @@ TEST(api_version_returns_number) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
@@ -240,7 +289,7 @@ TEST(log_returns_undefined) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
@@ -265,6 +314,39 @@ TEST(log_returns_undefined) {
 }
 
 /*
+ * Test: mbpf.log does not allocate on success path
+ */
+TEST(log_no_js_allocations) {
+    const char *baseline_js =
+        "function mbpf_prog(ctx) {\n"
+        "    return 0;\n"
+        "}\n";
+
+    const char *log_js =
+        "var msg = 'alloc check';\n"
+        "function mbpf_prog(ctx) {\n"
+        "    mbpf.log(1, msg);\n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t baseline_growth = 0;
+    int err = measure_heap_growth(baseline_js, 0, &baseline_growth);
+    ASSERT_EQ(err, 0);
+
+    size_t log_growth = 0;
+    err = measure_heap_growth(log_js, 0, &log_growth);
+    ASSERT_EQ(err, 0);
+
+    if (log_growth != baseline_growth) {
+        printf("heap grew during mbpf.log: baseline=%zu log=%zu\n",
+               baseline_growth, log_growth);
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
  * Test: mbpf.u64LoadLE writes to preallocated output, returns undefined
  */
 TEST(u64_load_le_uses_preallocated_output) {
@@ -285,7 +367,7 @@ TEST(u64_load_le_uses_preallocated_output) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
@@ -333,7 +415,7 @@ TEST(u64_store_le_uses_preallocated_buffer) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
@@ -377,7 +459,7 @@ TEST(now_ns_uses_preallocated_output) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_TIME\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_TIME\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_config_t cfg = { .allowed_capabilities = MBPF_CAP_TIME };
@@ -420,7 +502,7 @@ TEST(emit_returns_boolean) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_EMIT\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_EMIT\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_config_t cfg = { .allowed_capabilities = MBPF_CAP_EMIT };
@@ -469,7 +551,7 @@ TEST(stats_uses_preallocated_output) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_STATS\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_STATS\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_config_t cfg = { .allowed_capabilities = MBPF_CAP_STATS };
@@ -515,7 +597,7 @@ TEST(ctx_read_u8_returns_number) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
@@ -563,7 +645,7 @@ TEST(ctx_read_bytes_uses_preallocated_buffer) {
 
     uint8_t pkg[16384];
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
-                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL);
+                                         MBPF_HOOK_TRACEPOINT, "\"CAP_LOG\"", NULL, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
@@ -615,7 +697,7 @@ TEST(map_lookup_returns_boolean) {
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
                                          MBPF_HOOK_TRACEPOINT,
                                          "\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"",
-                                         map_def);
+                                         map_def, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_config_t cfg = {
@@ -665,7 +747,7 @@ TEST(map_update_returns_boolean) {
     size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len,
                                          MBPF_HOOK_TRACEPOINT,
                                          "\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"",
-                                         map_def);
+                                         map_def, 1000);
     ASSERT(pkg_len > 0);
 
     mbpf_runtime_config_t cfg = {
@@ -706,6 +788,7 @@ int main(void) {
     printf("mbpf.* helper return type tests:\n");
     RUN_TEST(api_version_returns_number);
     RUN_TEST(log_returns_undefined);
+    RUN_TEST(log_no_js_allocations);
     RUN_TEST(emit_returns_boolean);
 
     printf("\nPreallocated output buffer tests:\n");

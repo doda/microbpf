@@ -1169,7 +1169,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
 
     snprintf(code, sizeof(code),
         "(function(){"
-        "%s"  /* CAP_LOG: create levelNames for log helper */
+        "%s"  /* CAP_LOG: log helper setup */
         "%s"  /* CAP_TIME: create _mbpf_time_ns array */
         "%s"  /* CAP_EMIT: create _mbpf_emit_* state */
         "%s"  /* CAP_STATS: create _mbpf_stats object */
@@ -1201,7 +1201,7 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
         "}%s%s%s"
         "};"
         "})()",
-        has_cap_log ? "var levelNames=['DEBUG','INFO','WARN','ERROR'];" : "",
+        has_cap_log ? "" : "",
         has_cap_time ? "globalThis._mbpf_time_ns=[0,0];" : "",
         has_cap_emit ?
             /* Create emit buffer state:
@@ -1233,7 +1233,12 @@ static int setup_mbpf_object(JSContext *ctx, uint32_t capabilities) {
                 "if(level<0)level=0;"
                 "if(level>3)level=3;"
                 "if(msg===undefined)msg='';"
-                "print('['+levelNames[level]+'] '+String(msg));"
+                "if(typeof msg!=='string')throw new TypeError('message must be string');"
+                "var prefix='[INFO]';"
+                "if(level===0)prefix='[DEBUG]';"
+                "else if(level===2)prefix='[WARN]';"
+                "else if(level===3)prefix='[ERROR]';"
+                "print(prefix,msg);"
             "},"
             : "",
         has_cap_time ?
@@ -7294,6 +7299,13 @@ mbpf_instance_t *mbpf_program_get_instance(mbpf_program_t *prog, uint32_t idx) {
         return NULL;
     }
     return &prog->instances[idx];
+}
+
+size_t mbpf_instance_heap_used(mbpf_instance_t *inst) {
+    if (!inst || !inst->js_ctx) {
+        return 0;
+    }
+    return JS_GetHeapUsage(inst->js_ctx);
 }
 
 /* Ring buffer map access (host-side API) */
