@@ -143,3 +143,20 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenge: init.sh --quick still failing due to program unload tests.
 - Resolution: not addressed in this session; failure persists for follow-up.
 - Follow-up: investigate mbpf_program_load failures in tests/test_program_unload.c when mbpf_fini is defined.
+- fix-manifest-json-size-off-by-one: PASS; aligned JSON size semantics to include NUL and updated generator sizing behavior.
+- Added JSON exact-size unit test and adjusted manifest generator/test/tool docs to use size-including-NUL convention.
+- Fixed manifest JSON builders with hook_type arg ordering in context/exception/return/log/hash tests to avoid target mismatch load failures.
+- Increased GC reference test heap size for heavy allocation stress to avoid OOM during GC stress.
+- Updated runtime defaults to apply when config struct is partially filled and added CAP_MAP_ITERATE to default allowlist.
+- Files changed: src/mbpf_manifest_gen.c, include/mbpf_manifest_gen.h, tests/test_manifest_gen.c, tools/mbpf_manifest_gen.c, docs/C_API_REFERENCE.md.
+- Additional fixes: src/mbpf_runtime.c, tests/test_context_read_methods.c, tests/test_context_net_rx_v1.c, tests/test_exception_handling.c, tests/test_return_value.c, tests/test_helper_log.c, tests/test_hash_map.c, tests/test_gc_reference.c.
+- Tests: make build/test_program_unload && ./build/test_program_unload (PASS).
+- Tests: make build/test_context_read_methods && ./build/test_context_read_methods (PASS).
+- Tests: make build/test_context_net_rx_v1 && ./build/test_context_net_rx_v1 (PASS).
+- Tests: make build/test_exception_handling && ./build/test_exception_handling (PASS).
+- Tests: make build/test_map_iteration && ./build/test_map_iteration (PASS).
+- Tests: make build/test_gc_reference && ./build/test_gc_reference (PASS).
+- Tests: make build/test_manifest_gen && ./build/test_manifest_gen (PASS).
+- Tests: ./init.sh --quick (PASS) and ./init.sh (PASS).
+- Challenges: init.sh exposed multiple test manifest arg-order bugs and GC stress OOM; resolved by fixing manifest argument order and raising GC stress heap size.
+- Follow-ups: none.

@@ -1314,7 +1314,7 @@
       "src/mbpf_manifest_gen.c",
       "tests/test_manifest_gen.c"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "enforce-budgets-required-keys",

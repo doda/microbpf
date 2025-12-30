@@ -80,8 +80,7 @@ static size_t build_manifest(uint8_t *buf, size_t cap, int hook_type) {
         "\"budgets\":{\"max_steps\":100000,\"max_helpers\":1000},"
         "\"capabilities\":[\"CAP_LOG\"]"
         "}",
-        mbpf_runtime_word_size(), mbpf_runtime_endianness(),
-        hook_type);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness());
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);

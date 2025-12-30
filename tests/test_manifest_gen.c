@@ -296,13 +296,13 @@ TEST(generate_json_minimal) {
     size_t size = mbpf_manifest_json_size(&m);
     ASSERT(size > 0);
 
-    char *buf = malloc(size + 1);
+    char *buf = malloc(size);
     ASSERT(buf != NULL);
 
-    size_t len = size + 1;
+    size_t len = size;
     int err = mbpf_manifest_generate_json(&m, buf, &len);
     ASSERT_EQ(err, MBPF_OK);
-    ASSERT_EQ(len, size);
+    ASSERT_EQ(len + 1, size);
 
     /* Verify it's valid JSON by parsing */
     mbpf_manifest_t parsed;
@@ -313,6 +313,30 @@ TEST(generate_json_minimal) {
     ASSERT_EQ(parsed.hook_type, MBPF_HOOK_NET_RX);
 
     mbpf_manifest_free(&parsed);
+    free(buf);
+    return 0;
+}
+
+/* Test: JSON size includes null terminator */
+TEST(generate_json_exact_size) {
+    mbpf_manifest_t m;
+    mbpf_manifest_init_defaults(&m);
+    strcpy(m.program_name, "exact_size");
+    strcpy(m.program_version, "1.0.0");
+    m.hook_type = MBPF_HOOK_NET_RX;
+
+    size_t size = mbpf_manifest_json_size(&m);
+    ASSERT(size > 0);
+
+    char *buf = malloc(size);
+    ASSERT(buf != NULL);
+
+    size_t len = size;
+    int err = mbpf_manifest_generate_json(&m, buf, &len);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(len + 1, size);
+    ASSERT_EQ(buf[len], '\0');
+
     free(buf);
     return 0;
 }
@@ -335,10 +359,10 @@ TEST(generate_json_complete) {
     size_t size = mbpf_manifest_json_size(&m);
     ASSERT(size > 0);
 
-    char *buf = malloc(size + 1);
+    char *buf = malloc(size);
     ASSERT(buf != NULL);
 
-    size_t len = size + 1;
+    size_t len = size;
     int err = mbpf_manifest_generate_json(&m, buf, &len);
     ASSERT_EQ(err, MBPF_OK);
 
@@ -382,10 +406,10 @@ TEST(generate_json_with_maps) {
     size_t size = mbpf_manifest_json_size(&m);
     ASSERT(size > 0);
 
-    char *buf = malloc(size + 1);
+    char *buf = malloc(size);
     ASSERT(buf != NULL);
 
-    size_t len = size + 1;
+    size_t len = size;
     int err = mbpf_manifest_generate_json(&m, buf, &len);
     ASSERT_EQ(err, MBPF_OK);
 
@@ -571,6 +595,7 @@ int main(void) {
 
     printf("\nJSON generation:\n");
     RUN_TEST(generate_json_minimal);
+    RUN_TEST(generate_json_exact_size);
     RUN_TEST(generate_json_complete);
     RUN_TEST(generate_json_with_maps);
 

@@ -3168,19 +3168,54 @@ mbpf_runtime_t *mbpf_runtime_init(const mbpf_runtime_config_t *cfg) {
         return NULL;
     }
 
+    /* Set reasonable defaults first, then override with explicit config. */
+    rt->config.default_heap_size = 16384;    /* 16KB */
+    rt->config.default_max_steps = 100000;
+    rt->config.default_max_helpers = 1000;
+    rt->config.allowed_capabilities = MBPF_CAP_LOG | MBPF_CAP_MAP_READ |
+                                      MBPF_CAP_MAP_WRITE | MBPF_CAP_MAP_ITERATE;
+    rt->config.require_signatures = false;
+    rt->config.debug_mode = false;
+    rt->config.instance_mode = MBPF_INSTANCE_SINGLE;
+    rt->config.instance_count = 1;
+
     if (cfg) {
-        rt->config = *cfg;
-    } else {
-        /* Set reasonable defaults */
-        rt->config.default_heap_size = 16384;    /* 16KB */
-        rt->config.default_max_steps = 100000;
-        rt->config.default_max_helpers = 1000;
-        rt->config.allowed_capabilities = MBPF_CAP_LOG | MBPF_CAP_MAP_READ |
-                                          MBPF_CAP_MAP_WRITE;
-        rt->config.require_signatures = false;
-        rt->config.debug_mode = false;
-        rt->config.instance_mode = MBPF_INSTANCE_SINGLE;
-        rt->config.instance_count = 1;
+        if (cfg->default_heap_size) {
+            rt->config.default_heap_size = cfg->default_heap_size;
+        }
+        if (cfg->default_max_steps) {
+            rt->config.default_max_steps = cfg->default_max_steps;
+        }
+        if (cfg->default_max_helpers) {
+            rt->config.default_max_helpers = cfg->default_max_helpers;
+        }
+        if (cfg->allowed_capabilities) {
+            rt->config.allowed_capabilities = cfg->allowed_capabilities;
+        }
+        rt->config.require_signatures = cfg->require_signatures;
+        rt->config.debug_mode = cfg->debug_mode;
+        if (cfg->log_fn) {
+            rt->config.log_fn = cfg->log_fn;
+        }
+        if (cfg->instance_mode != MBPF_INSTANCE_SINGLE) {
+            rt->config.instance_mode = cfg->instance_mode;
+        }
+        if (cfg->instance_count > 0) {
+            rt->config.instance_count = cfg->instance_count;
+        }
+        if (cfg->exception_default_fn) {
+            rt->config.exception_default_fn = cfg->exception_default_fn;
+        }
+        if (cfg->circuit_breaker_threshold) {
+            rt->config.circuit_breaker_threshold = cfg->circuit_breaker_threshold;
+        }
+        if (cfg->circuit_breaker_cooldown_us) {
+            rt->config.circuit_breaker_cooldown_us = cfg->circuit_breaker_cooldown_us;
+        }
+        rt->config.trace_enabled = cfg->trace_enabled;
+        if (cfg->trace_rate_limit_per_sec) {
+            rt->config.trace_rate_limit_per_sec = cfg->trace_rate_limit_per_sec;
+        }
     }
 
     if (!rt->config.log_fn) {

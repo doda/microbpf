@@ -1357,6 +1357,8 @@ int mbpf_manifest_generate_json(const mbpf_manifest_t *manifest,
 ```
 
 Generates JSON-encoded manifest.
+`out_len` is the buffer size including the null terminator; on success,
+`out_len` is updated to the JSON byte length excluding the null terminator.
 
 #### mbpf_manifest_cbor_size
 
@@ -1373,6 +1375,7 @@ size_t mbpf_manifest_json_size(const mbpf_manifest_t *manifest);
 ```
 
 Calculates required JSON buffer size.
+The returned size includes the null terminator.
 
 #### mbpf_manifest_validate
 

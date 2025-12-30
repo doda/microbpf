@@ -219,14 +219,14 @@ int main(int argc, char *argv[]) {
 
     if (strcmp(format, "json") == 0) {
         size_t size = mbpf_manifest_json_size(&m);
-        char *buf = malloc(size + 1);
+        char *buf = malloc(size);
         if (!buf) {
             fprintf(stderr, "Error: out of memory\n");
             fclose(f);
             return 1;
         }
 
-        size_t len = size + 1;
+        size_t len = size;
         err = mbpf_manifest_generate_json(&m, buf, &len);
         if (err != MBPF_OK) {
             fprintf(stderr, "Error: failed to generate JSON (error %d)\n", err);
