@@ -628,6 +628,53 @@ TEST(ctx_edge_case_values) {
     return 0;
 }
 
+/*
+ * Test 11: Reject ctx blob with mismatched ABI version
+ */
+TEST(ctx_abi_version_mismatch) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    return 1;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[8192];
+    size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len, MBPF_HOOK_NET_RX);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    mbpf_program_t *prog = NULL;
+    mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    mbpf_program_attach(rt, prog, MBPF_HOOK_NET_RX);
+
+    mbpf_ctx_net_rx_v1_t ctx_blob = {
+        .abi_version = 2,
+        .ifindex = 1,
+        .pkt_len = 64,
+        .data_len = 0,
+        .l2_proto = 0,
+        .flags = 0,
+        .data = NULL,
+        .read_fn = NULL
+    };
+
+    int32_t out_rc = -999;
+    int err = mbpf_run(rt, MBPF_HOOK_NET_RX, &ctx_blob, sizeof(ctx_blob), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, MBPF_NET_PASS);
+
+    mbpf_stats_t stats = {0};
+    mbpf_program_stats(prog, &stats);
+    ASSERT_EQ(stats.invocations, 0);
+    ASSERT_EQ(stats.exceptions, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
     int passed = 0, failed = 0;
@@ -652,6 +699,7 @@ int main(int argc, char *argv[]) {
     printf("\nEdge case tests:\n");
     RUN_TEST(ctx_null_when_no_blob);
     RUN_TEST(ctx_edge_case_values);
+    RUN_TEST(ctx_abi_version_mismatch);
 
     printf("\n==============================\n");
     printf("Results: %d passed, %d failed\n", passed, failed);

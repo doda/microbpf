@@ -6410,6 +6410,46 @@ static JSValue create_hook_ctx(JSContext *ctx, mbpf_hook_id_t hook,
     }
 }
 
+static bool ctx_blob_abi_matches(mbpf_hook_type_t hook_type,
+                                 const void *ctx_blob, size_t ctx_len,
+                                 uint32_t expected, uint32_t *out_actual) {
+    if (!ctx_blob || ctx_len == 0) {
+        return true;
+    }
+
+    uint32_t actual = 0;
+    switch (hook_type) {
+        case MBPF_HOOK_NET_RX:
+        case MBPF_HOOK_NET_TX:
+            if (ctx_len < sizeof(mbpf_ctx_net_rx_v1_t)) return true;
+            actual = ((const mbpf_ctx_net_rx_v1_t *)ctx_blob)->abi_version;
+            break;
+        case MBPF_HOOK_TRACEPOINT:
+            if (ctx_len < sizeof(mbpf_ctx_tracepoint_v1_t)) return true;
+            actual = ((const mbpf_ctx_tracepoint_v1_t *)ctx_blob)->abi_version;
+            break;
+        case MBPF_HOOK_TIMER:
+            if (ctx_len < sizeof(mbpf_ctx_timer_v1_t)) return true;
+            actual = ((const mbpf_ctx_timer_v1_t *)ctx_blob)->abi_version;
+            break;
+        case MBPF_HOOK_SECURITY:
+            if (ctx_len < sizeof(mbpf_ctx_security_v1_t)) return true;
+            actual = ((const mbpf_ctx_security_v1_t *)ctx_blob)->abi_version;
+            break;
+        case MBPF_HOOK_CUSTOM:
+            if (ctx_len < sizeof(mbpf_ctx_custom_v1_t)) return true;
+            actual = ((const mbpf_ctx_custom_v1_t *)ctx_blob)->abi_version;
+            break;
+        default:
+            return true;
+    }
+
+    if (out_actual) {
+        *out_actual = actual;
+    }
+    return actual == expected;
+}
+
 /*
  * Execute a program on a specific instance.
  * Returns MBPF_OK on success, error code on failure.
@@ -6438,6 +6478,17 @@ static int run_on_instance(mbpf_instance_t *inst, mbpf_program_t *prog,
         *out_rc = exception_default;
         mbpf_trace_log(prog->runtime, "run_on_instance: nested execution blocked");
         return MBPF_ERR_NESTED_EXEC;
+    }
+
+    uint32_t ctx_abi = 0;
+    if (!ctx_blob_abi_matches((mbpf_hook_type_t)hook, ctx_blob, ctx_len,
+                              prog->manifest.hook_ctx_abi_version, &ctx_abi)) {
+        *out_rc = exception_default;
+        mbpf_trace_log(prog->runtime,
+                       "run_on_instance: ctx ABI mismatch expected=%u got=%u",
+                       prog->manifest.hook_ctx_abi_version, ctx_abi);
+        __atomic_store_n(&inst->in_use, 0, __ATOMIC_SEQ_CST);
+        return MBPF_ERR_ABI_MISMATCH;
     }
 
     /* Reset step budget for this invocation */
@@ -7068,6 +7119,9 @@ int mbpf_run(mbpf_runtime_t *rt, mbpf_hook_id_t hook,
                 /* Nested execution was detected. prog_rc contains the safe
                  * default (set by run_on_instance). Propagate it so the
                  * caller gets the appropriate fail-safe value. */
+                *out_rc = prog_rc;
+            } else if (err == MBPF_ERR_ABI_MISMATCH) {
+                /* ABI mismatch returned a safe default without executing. */
                 *out_rc = prog_rc;
             }
         }
