@@ -10,7 +10,7 @@
       "Confirm project structure includes src/, include/, tools/, tests/, examples/ directories",
       "Verify a basic Makefile or CMake build system compiles successfully"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "package-format-header",
@@ -23,7 +23,7 @@
       "Verify parser rejects files with invalid magic",
       "Verify parser handles different format versions appropriately"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "package-format-section-table",
@@ -36,7 +36,7 @@
       "Verify parser detects overlapping sections and rejects them",
       "Verify unknown section types are skipped gracefully"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "package-format-manifest",
@@ -54,7 +54,7 @@
       "Verify parser extracts maps array definitions",
       "Verify parser rejects manifest missing required fields"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "package-format-bytecode-section",
@@ -68,7 +68,7 @@
       "Verify loader rejects bytecode that fails JS_IsBytecode check",
       "Verify loader rejects bytecode with mismatched JS_BYTECODE_VERSION"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "package-format-crc-validation",
@@ -80,7 +80,7 @@
       "Verify loader validates per-section crc32 when non-zero",
       "Verify loader rejects files with invalid CRCs"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "package-format-signing",
@@ -94,7 +94,7 @@
       "Verify unsigned packages are rejected in production mode",
       "Verify unsigned packages are allowed in development mode when configured"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "runtime-init-shutdown",
@@ -107,7 +107,7 @@
       "Verify no memory leaks on shutdown (valgrind or equivalent)",
       "Verify multiple init/shutdown cycles work correctly"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "program-load-basic",
@@ -120,7 +120,7 @@
       "Verify out_prog pointer is set to valid mbpf_program_t",
       "Verify program can be retrieved/identified after loading"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "program-load-validation",
@@ -134,7 +134,7 @@
       "Attempt to load .mbpf with heap_size below platform minimum - verify rejection",
       "Attempt to load .mbpf with incompatible bytecode version - verify rejection"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "program-unload",
@@ -148,7 +148,7 @@
       "Verify mbpf_fini is called if defined in program",
       "Verify double-unload is handled gracefully"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "program-attach-detach",
@@ -162,7 +162,7 @@
       "Verify detach returns success",
       "Verify program no longer runs when hook fires after detach"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "program-attach-validation",
@@ -174,7 +174,7 @@
       "Attempt to attach same program twice to same hook - verify appropriate behavior",
       "Attach multiple programs to same hook - verify all execute"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "instance-creation",
@@ -186,7 +186,7 @@
       "Verify each instance has its own JSContext with configured heap_size",
       "Verify instances are isolated from each other"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "runtime-run-basic",
@@ -198,7 +198,7 @@
       "Verify out_rc contains the return value (0)",
       "Verify program's mbpf_prog function was called"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "runtime-context-object",
@@ -210,7 +210,7 @@
       "Verify program receives correct scalar values",
       "Verify ctx properties are read-only (writes are rejected or ignored)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "context-read-methods",
@@ -226,7 +226,7 @@
       "Verify out-of-bounds reads throw exceptions",
       "Verify type errors thrown for invalid arguments"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "context-net-rx-v1",
@@ -240,7 +240,7 @@
       "Test with read_fn instead of data pointer",
       "Verify MBPF_CTX_F_TRUNCATED flag is accessible"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "hook-tracepoint",
@@ -253,7 +253,7 @@
       "Verify program executes and return value is captured",
       "Verify return 0 indicates success, non-zero is soft failure"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "hook-timer",
@@ -266,7 +266,7 @@
       "Verify timer context provides expected fields",
       "Detach and verify timer stops"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "hook-net-rx",
@@ -280,7 +280,7 @@
       "Verify MBPF_NET_DROP (1) drops packet",
       "Verify MBPF_NET_ABORT (2) handled appropriately"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "hook-net-tx",
@@ -292,7 +292,7 @@
       "Invoke with packet context",
       "Verify return codes affect transmission decision"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "hook-security",
@@ -304,7 +304,7 @@
       "Invoke with authorization context",
       "Verify allow/deny return codes are honored"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "hook-custom",
@@ -316,7 +316,7 @@
       "Attach and invoke with custom context",
       "Verify custom context fields accessible"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "entry-point-mbpf-prog",
@@ -328,7 +328,7 @@
       "Load program without mbpf_prog - verify load fails",
       "Verify custom entry_symbol from manifest is honored"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "entry-point-mbpf-init",
@@ -340,7 +340,7 @@
       "Load program without mbpf_init - verify load succeeds",
       "Verify mbpf_init can access maps object"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "entry-point-mbpf-fini",
@@ -352,7 +352,7 @@
       "Verify mbpf_fini was called (best-effort)",
       "Load program without mbpf_fini - verify unload succeeds"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "return-value-semantics",
@@ -364,7 +364,7 @@
       "Run program returning negative integer - verify out_rc matches",
       "Run program returning non-integer - verify conversion to int32"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "exception-handling",
@@ -377,7 +377,7 @@
       "Verify exception is counted in per-program stats",
       "Configure different default for different hook types"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-array-basic",
@@ -391,7 +391,7 @@
       "Call maps.myarray.lookup(0, outBuffer) - verify returns true with correct data",
       "Verify index bounds checking (reject negative, >= max_entries)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-hash-basic",
@@ -406,7 +406,7 @@
       "Call maps.myhash.delete(keyBuffer) - verify returns true",
       "Call maps.myhash.lookup(keyBuffer, outBuffer) - verify returns false after delete"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-hash-collision",
@@ -418,7 +418,7 @@
       "Delete entries and verify correct ones removed",
       "Verify map doesn't corrupt on high load"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-max-entries",
@@ -430,7 +430,7 @@
       "Attempt to insert 6th entry - verify appropriate behavior (reject or LRU)",
       "Verify existing entries remain intact"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-type-validation",
@@ -442,7 +442,7 @@
       "Attempt update with value of wrong size - verify TypeError",
       "Attempt array lookup with non-number key - verify TypeError"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-lru-hash",
@@ -455,7 +455,7 @@
       "Access entries to update LRU order",
       "Verify most recently accessed entries are retained"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-per-cpu",
@@ -467,7 +467,7 @@
       "Update on CPU0, read on CPU1 - verify isolation",
       "Aggregate values across CPUs if API supports"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-ring-buffer",
@@ -479,7 +479,7 @@
       "Read events from ring buffer (host side)",
       "Verify overflow behavior (oldest events dropped)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-counter",
@@ -491,7 +491,7 @@
       "Verify 64-bit counters work correctly",
       "Verify concurrent updates don't lose counts"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-iteration",
@@ -505,7 +505,7 @@
       "Verify all keys are visited",
       "Verify iteration counts toward max_helpers budget"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-persistence",
@@ -517,7 +517,7 @@
       "Verify map data is preserved after update",
       "Verify maps are destroyed when policy requires"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-concurrency",
@@ -529,7 +529,7 @@
       "Verify per-CPU maps avoid global contention",
       "Stress test with high concurrency"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "helper-api-version",
@@ -540,7 +540,7 @@
       "Verify value is number encoded as major<<16|minor",
       "Verify value matches runtime's API version"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "helper-log",
@@ -552,7 +552,7 @@
       "Verify log is rate-limited or no-op in production mode",
       "Test different log levels"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "helper-u64-load-store",
@@ -567,7 +567,7 @@
       "Verify little-endian byte order",
       "Verify type/bounds errors throw"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "helper-now-ns",
@@ -579,7 +579,7 @@
       "Verify out contains monotonic time in nanoseconds as u64",
       "Call twice and verify second value >= first"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "helper-emit",
@@ -591,7 +591,7 @@
       "Verify event appears in ring buffer or platform event pipe",
       "Verify eventId and data are correctly captured"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "helper-stats",
@@ -602,7 +602,7 @@
       "Call mbpf.stats() - verify returns platform-defined stats object",
       "Verify invocation counts, error counts, etc. are accessible"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "helper-map-lowlevel",
@@ -613,7 +613,7 @@
       "Call mbpf.mapUpdate(mapId, keyBytes, valueBytes, flags) - verify works",
       "Call mbpf.mapDelete(mapId, keyBytes) - verify works"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "budget-max-steps",
@@ -626,7 +626,7 @@
       "Verify budget exceeded is counted in stats",
       "Verify safe default is returned on budget exceeded"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "budget-max-helpers",
@@ -639,7 +639,7 @@
       "Verify helper count includes all helper types",
       "Verify safe default returned on limit exceeded"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "budget-max-wall-time",
@@ -651,7 +651,7 @@
       "Run slow program (busy loop) - verify aborted within time limit",
       "Verify timing overhead is acceptable"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "budget-interrupt-handler",
@@ -663,7 +663,7 @@
       "Verify handler returns non-zero to abort on budget exceeded",
       "Verify JS_SetContextOpaque stores instance for counter access"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "memory-heap-size",
@@ -676,7 +676,7 @@
       "Verify OOM is counted in stats",
       "Verify safe default returned on OOM"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "memory-minimum-heap",
@@ -687,7 +687,7 @@
       "Verify load fails with appropriate error",
       "Document platform minimum heap size"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "capability-enforcement",
@@ -699,7 +699,7 @@
       "Call helper requiring CAP_TIME without capability - verify throws",
       "Configure platform allow-list and verify enforcement"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "capability-categories",
@@ -714,7 +714,7 @@
       "Verify CAP_TIME gates mbpf.nowNs",
       "Verify CAP_STATS gates mbpf.stats"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "nested-execution-prevention",
@@ -726,7 +726,7 @@
       "Verify nested invocation is counted in stats",
       "Verify in_use flag is atomically managed"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "failure-isolation",
@@ -738,7 +738,7 @@
       "Verify other programs continue to execute",
       "Verify shared state (maps) is not corrupted"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "circuit-breaker",
@@ -750,7 +750,7 @@
       "Verify program is temporarily disabled",
       "Verify program re-enables after cooldown period"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "api-version-enforcement",
@@ -762,7 +762,7 @@
       "Load program requiring higher minor version than runtime - verify rejected",
       "Load program with lower minor version - verify succeeds"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "per-helper-versioning",
@@ -773,7 +773,7 @@
       "Verify each helper version is checked against runtime",
       "Verify incompatible helper version causes load rejection"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "typed-array-shim",
@@ -785,7 +785,7 @@
       "Implement u8array_data(val) - verify returns valid pointer",
       "Verify pointer is ephemeral (valid only until next allocation)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "allocation-free-helpers",
@@ -797,7 +797,7 @@
       "Verify helpers return numbers/booleans only",
       "Verify typed array pointers are safe to use within helper"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "gc-reference-handling",
@@ -809,7 +809,7 @@
       "Verify references are released on cleanup",
       "Stress test with allocations to trigger GC"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "deferred-execution-queue",
@@ -821,7 +821,7 @@
       "Verify worker context drains queue and executes program",
       "Verify queue has fixed maximum depth"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "deferred-execution-backpressure",
@@ -833,7 +833,7 @@
       "Verify invocations are dropped (not blocking)",
       "Verify per-program/per-hook drop counter is incremented"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "deferred-context-snapshot",
@@ -846,7 +846,7 @@
       "Verify worker sees correct snapshotted buffer data",
       "Verify TRUNCATED flag set if data was truncated"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "global-mbpf-object",
@@ -859,7 +859,7 @@
       "Verify mbpf.u64LoadLE and mbpf.u64StoreLE exist",
       "Verify optional helpers present based on config"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "global-maps-object",
@@ -871,7 +871,7 @@
       "Verify maps.myarray object exists with lookup/update methods",
       "Verify maps.myhash object exists with lookup/update/delete methods"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "global-console-debug",
@@ -883,7 +883,7 @@
       "Verify output appears (mapped to mbpf.log)",
       "Disable debug mode and verify console.log unavailable"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "disallowed-globals",
@@ -895,7 +895,7 @@
       "Verify filesystem APIs are not available",
       "Verify network APIs are not available"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "toolchain-js-compile",
@@ -907,7 +907,7 @@
       "Verify bytecode file is generated",
       "Verify -m32 flag works for 32-bit targets"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "toolchain-manifest-gen",
@@ -918,7 +918,7 @@
       "Include all required fields per spec",
       "Generate binary manifest section"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "toolchain-mbpf-assemble",
@@ -930,7 +930,7 @@
       "Calculate CRC32 values if requested",
       "Output valid .mbpf binary"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "toolchain-signing",
@@ -942,7 +942,7 @@
       "Append MBPF_SEC_SIG section with signature",
       "Verify signed package can be loaded"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "observability-counters",
@@ -955,7 +955,7 @@
       "Trigger OOM and verify OOM count increments",
       "Trigger budget exceeded and verify counter increments"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "observability-trace-logs",
@@ -967,7 +967,7 @@
       "Trigger many events and verify rate limiting kicks in",
       "Verify rate limit is configurable"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "observability-debug-symbols",
@@ -978,7 +978,7 @@
       "Load package and verify debug info is available",
       "Verify source hash for provenance tracking"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "target-word-size",
@@ -991,7 +991,7 @@
       "Load on 64-bit runtime - verify works",
       "Cross-load (32 on 64 or vice versa) - verify rejected"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "target-endianness",
@@ -1002,7 +1002,7 @@
       "Load on little-endian runtime - verify works",
       "Verify endianness mismatch is rejected"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "example-net-rx-filter",
@@ -1015,7 +1015,7 @@
       "Send packet with first byte 0xFF - verify dropped",
       "Send packet with different first byte - verify passed"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "u64-representation",
@@ -1027,7 +1027,7 @@
       "Store to buffer and verify little-endian encoding",
       "Load from buffer and verify reconstruction"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "rom-resident-stdlib",
@@ -1038,7 +1038,7 @@
       "Verify fast initialization (no RAM-based table copying)",
       "Measure RAM usage reduction"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "no-dynamic-alloc-runtime",
@@ -1049,7 +1049,7 @@
       "Verify no malloc/free calls from host library in hot path",
       "Verify fixed memory buffer is used for JS heap"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "context-object-reuse",
@@ -1060,7 +1060,7 @@
       "Update opaque pointer at each invocation",
       "Verify no per-invocation allocation for ctx"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "lock-free-map-reads",
@@ -1071,7 +1071,7 @@
       "Verify no lock contention on reads",
       "Verify correctness under concurrent read/write"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "error-invalid-package",
@@ -1083,7 +1083,7 @@
       "Load package with wrong magic - verify error code returned",
       "Verify error messages are informative"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "error-hook-mismatch",
@@ -1093,7 +1093,7 @@
       "Attach NET_RX program to TIMER hook - verify error",
       "Attach program with wrong context ABI version - verify error"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "error-capability-denied",
@@ -1103,7 +1103,7 @@
       "Load program requesting ungrantable capability - verify error",
       "Call helper without required capability - verify exception"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-unit-package-parser",
@@ -1114,7 +1114,7 @@
       "Test various invalid inputs",
       "Test edge cases (empty sections, max sizes)"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-unit-map-operations",
@@ -1125,7 +1125,7 @@
       "Test hash map operations",
       "Test edge cases and error conditions"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-unit-budget-enforcement",
@@ -1136,7 +1136,7 @@
       "Test helper count enforcement",
       "Test wall-time enforcement if supported"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-integration-load-run",
@@ -1147,7 +1147,7 @@
       "Load, attach, run, detach, unload",
       "Verify expected behavior at each step"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-integration-maps",
@@ -1158,7 +1158,7 @@
       "Verify map data persists",
       "Unload and verify cleanup"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-fuzz-package-parser",
@@ -1169,7 +1169,7 @@
       "Run fuzzer with corpus of valid packages",
       "Fix any crashes or hangs found"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "test-fuzz-helper-boundary",
@@ -1180,7 +1180,7 @@
       "Test with malformed Uint8Arrays, invalid offsets",
       "Fix any crashes found"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "docs-api-reference",
@@ -1191,7 +1191,7 @@
       "Document configuration options",
       "Include code examples"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "docs-js-api-reference",
@@ -1202,7 +1202,7 @@
       "Document maps API",
       "Document context object per hook type"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "docs-package-format",
@@ -1213,7 +1213,7 @@
       "Document manifest schema",
       "Document signing procedure"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "package-section-bounds-overflow",
@@ -1225,7 +1225,7 @@
       "Apply overflow-safe checks in mbpf_package_get_section and section table parsing",
       "Add tests with wrapped offsets/lengths to confirm rejection"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-allocation-overflow",
@@ -1237,7 +1237,7 @@
       "Cover array, hash, LRU, and per-CPU map allocations",
       "Add tests with large map sizes to verify safe failure paths"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "runtime-js-codegen-sizing",
@@ -1249,7 +1249,7 @@
       "Cover maps object and low-level map helper code paths",
       "Add tests with long map names and high map counts"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "runtime-map-name-escaping",
@@ -1261,7 +1261,7 @@
       "Consider rejecting invalid names at manifest parse time",
       "Add tests with malicious or malformed map names"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "ring-buffer-sync-bounds",
@@ -1273,7 +1273,7 @@
       "Consider chunked updates or direct buffer copying",
       "Add tests for large ring buffers and sync behavior"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "map-write-concurrency",
@@ -1285,7 +1285,7 @@
       "Update hash/array/LRU write paths accordingly",
       "Add concurrent writer tests to validate behavior"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "fix-new-lru-compile-error",
@@ -1299,7 +1299,7 @@
     "scope": [
       "src/mbpf_runtime.c"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "fix-manifest-json-size-off-by-one",
@@ -1314,7 +1314,7 @@
       "src/mbpf_manifest_gen.c",
       "tests/test_manifest_gen.c"
     ],
-    "passes": true
+    "completed": true
   },
   {
     "id": "enforce-budgets-required-keys",
@@ -1329,7 +1329,7 @@
       "src/mbpf_package.c",
       "tests/test_program_load_validation.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "validate-ctx-abi-version-at-run",
@@ -1347,7 +1347,7 @@
       "src/mbpf_runtime.c",
       "tests/test_context_object.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "fix-ctx-data-len-after-read-fn",
@@ -1365,7 +1365,7 @@
       "src/mbpf_runtime.c",
       "tests/test_context_read_methods.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "fix-mbpf-log-allocation-free",
@@ -1383,7 +1383,7 @@
       "src/mbpf_runtime.c",
       "tests/test_allocation_free_helpers.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "toolchain-assemble-signing-test-builds-tools",
@@ -1398,7 +1398,7 @@
       "tests/test_toolchain_assemble.sh",
       "tests/test_toolchain_signing.sh"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "toolchain-signing-loads-signed-package",
@@ -1415,7 +1415,7 @@
     "scope": [
       "tests/test_toolchain_signing.sh"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "assemble-test-endianness-strings",
@@ -1432,7 +1432,7 @@
     "scope": [
       "tests/test_mbpf_assemble.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "add-read-fn-coverage-across-hooks",
@@ -1451,7 +1451,7 @@
       "tests/test_hook_security.c",
       "tests/test_hook_custom.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "percpu-map-persistence-integration",
@@ -1469,7 +1469,7 @@
       "tests/test_map_persistence.c",
       "tests/test_percpu_map.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "map-iteration-lru-percpu-tests",
@@ -1486,7 +1486,7 @@
     "scope": [
       "tests/test_map_iteration.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "helper-js-allocation-detection",
@@ -1504,7 +1504,7 @@
       "tests/test_allocation_free_helpers.c",
       "tests/test_no_dynamic_alloc.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "typed-array-pointer-invalidation-test",
@@ -1521,7 +1521,7 @@
     "scope": [
       "tests/test_typed_array_shim.c"
     ],
-    "passes": false
+    "completed": false
   },
   {
     "id": "deferred-queue-synchronization",
@@ -1539,6 +1539,6 @@
       "src/mbpf_runtime.c",
       "tests/test_deferred_queue.c"
     ],
-    "passes": false
+    "completed": false
   }
 ]
