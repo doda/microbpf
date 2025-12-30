@@ -237,3 +237,14 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenges: init.sh --quick initial timeout during setup.
 - Resolution: reran init.sh --quick with higher timeout; init.sh completed.
 - Follow-ups: none.
+- add-read-fn-coverage-across-hooks: PASS.
+- Added read_fn-backed TRACEPOINT/SECURITY/CUSTOM hook tests plus short-read cases validating data_len update and bounds exceptions.
+- Files changed: tests/test_hook_tracepoint.c.
+- Files changed: tests/test_hook_security.c.
+- Files changed: tests/test_hook_custom.c.
+- Files changed: task_list.json.
+- Tests: make build/test_hook_tracepoint && ./build/test_hook_tracepoint (PASS).
+- Tests: make build/test_hook_security && ./build/test_hook_security (PASS).
+- Tests: make build/test_hook_custom && ./build/test_hook_custom (PASS).
+- Tests: ./init.sh --quick (PASS) and ./init.sh (PASS).
+- Challenges: none.

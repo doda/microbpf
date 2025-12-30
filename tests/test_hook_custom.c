@@ -147,6 +147,35 @@ static uint8_t *compile_js_to_bytecode(const char *js_code, size_t *out_len) {
     return bytecode;
 }
 
+static const uint8_t custom_read_data[] = {
+    0xDE, 0xAD, 0xBE, 0xEF, 0x99, 0x88, 0x77, 0x66
+};
+static const uint8_t custom_short_data[] = {
+    0x01, 0x23, 0x45, 0x67
+};
+
+static int custom_read_fn(const void *ctx_blob, uint32_t off, uint32_t len, uint8_t *dst) {
+    (void)ctx_blob;
+    if (!dst || off >= sizeof(custom_read_data)) {
+        return 0;
+    }
+    uint32_t avail = (uint32_t)sizeof(custom_read_data) - off;
+    uint32_t to_copy = len < avail ? len : avail;
+    memcpy(dst, custom_read_data + off, to_copy);
+    return (int)to_copy;
+}
+
+static int custom_short_read_fn(const void *ctx_blob, uint32_t off, uint32_t len, uint8_t *dst) {
+    (void)ctx_blob;
+    if (!dst || off >= sizeof(custom_short_data)) {
+        return 0;
+    }
+    uint32_t avail = (uint32_t)sizeof(custom_short_data) - off;
+    uint32_t to_copy = len < avail ? len : avail;
+    memcpy(dst, custom_short_data + off, to_copy);
+    return (int)to_copy;
+}
+
 /* ============================================================================
  * Test Cases - hook-custom
  * ============================================================================ */
@@ -613,6 +642,118 @@ TEST(custom_read_methods) {
 }
 
 /*
+ * Test 10b: Verify read methods work with custom context via read_fn
+ */
+TEST(custom_read_methods_read_fn) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    if (ctx.data_len !== 8) return -1;\n"
+        "    if (ctx.readU32LE(0) !== 0xEFBEADDE) return -2;\n"
+        "    var buf = new Uint8Array(4);\n"
+        "    var n = ctx.readBytes(4, 4, buf);\n"
+        "    if (n !== 4) return -3;\n"
+        "    if (buf[0] !== 0x99) return -4;\n"
+        "    if (buf[3] !== 0x66) return -5;\n"
+        "    return 0;\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[8192];
+    size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    ASSERT_EQ(err, MBPF_OK);
+
+    err = mbpf_program_attach(rt, prog, MBPF_HOOK_CUSTOM);
+    ASSERT_EQ(err, MBPF_OK);
+
+    mbpf_ctx_custom_v1_t ctx = {
+        .abi_version = 1,
+        .custom_hook_id = 100,
+        .schema_version = 1,
+        .flags = 0,
+        .field_count = 0,
+        .data_len = sizeof(custom_read_data),
+        .data = NULL,
+        .read_fn = custom_read_fn,
+        .fields = NULL
+    };
+
+    int32_t out_rc = -999;
+    err = mbpf_run(rt, MBPF_HOOK_CUSTOM, &ctx, sizeof(ctx), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
+ * Test 10c: Short read via read_fn updates data_len and bounds checks
+ */
+TEST(custom_short_read_fn) {
+    const char *js_code =
+        "function mbpf_prog(ctx) {\n"
+        "    if (ctx.data_len !== 4) return -1;\n"
+        "    if (ctx.readU16LE(0) !== 0x2301) return -2;\n"
+        "    try {\n"
+        "        ctx.readU8(4);\n"
+        "        return -3;\n"
+        "    } catch (e) {\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t pkg[8192];
+    size_t pkg_len = build_mbpf_package(pkg, sizeof(pkg), bytecode, bc_len);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+    ASSERT_EQ(err, MBPF_OK);
+
+    err = mbpf_program_attach(rt, prog, MBPF_HOOK_CUSTOM);
+    ASSERT_EQ(err, MBPF_OK);
+
+    mbpf_ctx_custom_v1_t ctx = {
+        .abi_version = 1,
+        .custom_hook_id = 100,
+        .schema_version = 1,
+        .flags = 0,
+        .field_count = 0,
+        .data_len = 8,
+        .data = NULL,
+        .read_fn = custom_short_read_fn,
+        .fields = NULL
+    };
+
+    int32_t out_rc = -999;
+    err = mbpf_run(rt, MBPF_HOOK_CUSTOM, &ctx, sizeof(ctx), &out_rc);
+    ASSERT_EQ(err, MBPF_OK);
+    ASSERT_EQ(out_rc, 0);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/*
  * Test 11: Verify flags field is accessible
  */
 TEST(flags_field_accessible) {
@@ -984,6 +1125,8 @@ int main(int argc, char *argv[]) {
 
     printf("\nRead method tests:\n");
     RUN_TEST(custom_read_methods);
+    RUN_TEST(custom_read_methods_read_fn);
+    RUN_TEST(custom_short_read_fn);
 
     printf("\nContext field tests:\n");
     RUN_TEST(flags_field_accessible);
