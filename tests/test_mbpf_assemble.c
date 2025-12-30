@@ -42,6 +42,7 @@ static int tests_failed = 0;
 /* Sample manifest JSON - built dynamically with runtime word size */
 static char sample_manifest[512];
 static void init_sample_manifest(void) {
+    const char *endianness_str = mbpf_runtime_endianness() == 0 ? "little" : "big";
     snprintf(sample_manifest, sizeof(sample_manifest),
         "{"
         "\"program_name\":\"test_prog\","
@@ -49,14 +50,14 @@ static void init_sample_manifest(void) {
         "\"hook_type\":1,"
         "\"hook_ctx_abi_version\":1,"
         "\"mquickjs_bytecode_version\":32769,"
-        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
+        "\"target\":{\"word_size\":%u,\"endianness\":\"%s\"},"
         "\"mbpf_api_version\":65536,"
         "\"heap_size\":8192,"
         "\"budgets\":{\"max_steps\":10000,\"max_helpers\":100},"
         "\"capabilities\":[]"
         "}",
         mbpf_runtime_word_size(),
-        mbpf_runtime_endianness());
+        endianness_str);
 }
 
 /* Sample bytecode (just placeholder bytes for testing) */
