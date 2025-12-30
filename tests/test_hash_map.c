@@ -56,8 +56,8 @@ static size_t build_manifest_with_hash_map(uint8_t *buf, size_t cap, int hook_ty
         "\"capabilities\":[\"CAP_LOG\",\"CAP_MAP_READ\",\"CAP_MAP_WRITE\"],"
         "\"maps\":[{\"name\":\"%s\",\"type\":2,\"key_size\":%u,\"value_size\":%u,\"max_entries\":%u,\"flags\":0}]"
         "}",
-        mbpf_runtime_word_size(), mbpf_runtime_endianness(),
-        hook_type, map_name, key_size, value_size, max_entries);
+        hook_type, mbpf_runtime_word_size(), mbpf_runtime_endianness(),
+        map_name, key_size, value_size, max_entries);
     size_t len = strlen(json);
     if (len > cap) return 0;
     memcpy(buf, json, len);

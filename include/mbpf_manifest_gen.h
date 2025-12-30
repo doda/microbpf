@@ -39,7 +39,8 @@ int mbpf_manifest_generate_cbor(const mbpf_manifest_t *manifest,
  * Parameters:
  *   manifest   - Parsed manifest structure with all required fields
  *   out_data   - Buffer to receive JSON string (null-terminated)
- *   out_len    - On input, size of buffer; on output, bytes written (excluding null)
+ *   out_len    - On input, size of buffer (including null terminator);
+ *                on output, bytes written (excluding null)
  *
  * Returns:
  *   MBPF_OK on success
@@ -67,7 +68,7 @@ size_t mbpf_manifest_cbor_size(const mbpf_manifest_t *manifest);
  *   manifest   - Parsed manifest structure
  *
  * Returns:
- *   Required buffer size in bytes (excluding null terminator), or 0 on error
+ *   Required buffer size in bytes (including null terminator), or 0 on error
  */
 size_t mbpf_manifest_json_size(const mbpf_manifest_t *manifest);
 

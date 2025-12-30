@@ -570,7 +570,8 @@ size_t mbpf_manifest_json_size(const mbpf_manifest_t *manifest) {
 
     if (encode_manifest_json(manifest, &w) != 0) return 0;
 
-    return w.len;
+    if (w.len == SIZE_MAX) return 0;
+    return w.len + 1;  /* include null terminator */
 }
 
 int mbpf_manifest_generate_json(const mbpf_manifest_t *manifest,
@@ -583,8 +584,8 @@ int mbpf_manifest_generate_json(const mbpf_manifest_t *manifest,
     size_t required = mbpf_manifest_json_size(manifest);
     if (required == 0) return MBPF_ERR_INVALID_ARG;
 
-    /* +1 for null terminator */
-    if (!out_data || *out_len < required + 1) {
+    /* required includes null terminator */
+    if (!out_data || *out_len < required) {
         *out_len = required;
         return MBPF_ERR_NO_MEM;
     }
