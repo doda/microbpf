@@ -209,3 +209,14 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Tests: make build/test_typed_array_shim && ./build/test_typed_array_shim (PASS).
 - Init: ./init.sh (PASS).
 - Challenges: allocation test initially failed due to baseline heap growth; resolved by measuring log vs no-log growth.
+- 2025-12-30: toolchain-assemble-signing-test-builds-tools PASS.
+- Added build-or-skip helpers to toolchain assemble/signing shell tests to build required binaries on demand.
+- Ensured missing make/tools emit SKIP with actionable guidance instead of hard failure.
+- Files changed: tests/test_toolchain_assemble.sh.
+- Files changed: tests/test_toolchain_signing.sh.
+- Task status update: task_list.json set toolchain-assemble-signing-test-builds-tools completed=true.
+- Tests: tests/test_toolchain_assemble.sh (PASS; auto-built mbpf_assemble).
+- Tests: tests/test_toolchain_signing.sh (PASS; auto-built mbpf_sign/mbpf_manifest_gen).
+- Challenges: missing tool binaries at test start.
+- Resolution: build via make targets inside tests before execution.
+- Tests: ./init.sh (PASS; reported a link error building build/test_rom_stdlib but init.sh completed successfully).

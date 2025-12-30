@@ -1398,7 +1398,7 @@
       "tests/test_toolchain_assemble.sh",
       "tests/test_toolchain_signing.sh"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "toolchain-signing-loads-signed-package",
