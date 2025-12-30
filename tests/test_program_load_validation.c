@@ -57,6 +57,26 @@ static size_t build_manifest_with_heap(uint8_t *buf, size_t cap, uint32_t heap_s
     return (size_t)len;
 }
 
+static size_t build_manifest_with_budgets(uint8_t *buf, size_t cap, const char *budgets_json) {
+    char json[512];
+    int len = snprintf(json, sizeof(json),
+        "{"
+        "\"program_name\":\"test_prog\","
+        "\"program_version\":\"1.0.0\","
+        "\"hook_type\":1,"
+        "\"hook_ctx_abi_version\":1,"
+        "\"mquickjs_bytecode_version\":1,"
+        "\"target\":{\"word_size\":%u,\"endianness\":%u},"
+        "\"mbpf_api_version\":1,"
+        "\"heap_size\":%u,"
+        "\"budgets\":%s,"
+        "\"capabilities\":[\"CAP_LOG\"]"
+        "}", mbpf_runtime_word_size(), mbpf_runtime_endianness(), 65536, budgets_json);
+    if ((size_t)len >= cap) return 0;
+    memcpy(buf, json, len);
+    return (size_t)len;
+}
+
 /* Helper to build a minimal valid JSON manifest */
 static size_t build_test_manifest(uint8_t *buf, size_t cap) {
     return build_manifest_with_heap(buf, cap, 65536);
@@ -581,6 +601,70 @@ TEST(heap_size_zero) {
     return 0;
 }
 
+/* Test: Missing budgets.max_steps should be rejected */
+TEST(missing_budget_max_steps) {
+    const char *js_code = "function mbpf_prog(ctx) { return 0; }\n";
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t manifest[512];
+    size_t manifest_len = build_manifest_with_budgets(
+        manifest, sizeof(manifest), "{\"max_helpers\":1000}");
+    ASSERT(manifest_len > 0);
+
+    uint8_t pkg[8192];
+    size_t pkg_len = build_complete_package(pkg, sizeof(pkg),
+                                            manifest, manifest_len,
+                                            bytecode, bc_len);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+
+    ASSERT_EQ(err, MBPF_ERR_INVALID_PACKAGE);
+    ASSERT_NULL(prog);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
+/* Test: Missing budgets.max_helpers should be rejected */
+TEST(missing_budget_max_helpers) {
+    const char *js_code = "function mbpf_prog(ctx) { return 0; }\n";
+    size_t bc_len;
+    uint8_t *bytecode = compile_js_to_bytecode(js_code, &bc_len);
+    ASSERT_NOT_NULL(bytecode);
+
+    uint8_t manifest[512];
+    size_t manifest_len = build_manifest_with_budgets(
+        manifest, sizeof(manifest), "{\"max_steps\":100000}");
+    ASSERT(manifest_len > 0);
+
+    uint8_t pkg[8192];
+    size_t pkg_len = build_complete_package(pkg, sizeof(pkg),
+                                            manifest, manifest_len,
+                                            bytecode, bc_len);
+    ASSERT(pkg_len > 0);
+
+    mbpf_runtime_t *rt = mbpf_runtime_init(NULL);
+    ASSERT_NOT_NULL(rt);
+
+    mbpf_program_t *prog = NULL;
+    int err = mbpf_program_load(rt, pkg, pkg_len, NULL, &prog);
+
+    ASSERT_EQ(err, MBPF_ERR_INVALID_PACKAGE);
+    ASSERT_NULL(prog);
+
+    mbpf_runtime_shutdown(rt);
+    free(bytecode);
+    return 0;
+}
+
 /* ============================================================================
  * Test Cases - Incompatible Bytecode Version
  * ============================================================================ */
@@ -796,6 +880,10 @@ int main(void) {
     RUN_TEST(heap_size_too_small_4096);
     RUN_TEST(heap_size_at_minimum);
     RUN_TEST(heap_size_zero);
+
+    printf("\nBudget validation tests:\n");
+    RUN_TEST(missing_budget_max_steps);
+    RUN_TEST(missing_budget_max_helpers);
 
     printf("\nBytecode version validation tests:\n");
     RUN_TEST(bytecode_version_mismatch);

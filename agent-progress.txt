@@ -160,3 +160,13 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Tests: ./init.sh --quick (PASS) and ./init.sh (PASS).
 - Challenges: init.sh exposed multiple test manifest arg-order bugs and GC stress OOM; resolved by fixing manifest argument order and raising GC stress heap size.
 - Follow-ups: none.
+- enforce-budgets-required-keys: PASS.
+- Added required-field enforcement for budgets.max_steps/max_helpers in CBOR/JSON manifest parsing.
+- Added negative load tests for missing budget keys in validation suite.
+- Files changed: src/mbpf_package.c.
+- Files changed: tests/test_program_load_validation.c.
+- Files changed: task_list.json.
+- Tests: make build/test_program_load_validation && ./build/test_program_load_validation (PASS).
+- Tests: make build/test_manifest_gen && ./build/test_manifest_gen (PASS).
+- Tests: ./init.sh (PASS).
+- Challenges: none.
