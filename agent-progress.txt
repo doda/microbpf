@@ -185,3 +185,17 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenges: init.sh --quick initial timeout; reran with longer timeout.
 - Resolution: reran init.sh --quick with higher timeout and full init.sh after changes.
 - Follow-ups: none.
+- fix-ctx-data-len-after-read-fn: PASS.
+- Updated ctx.data_len handling to use actual snapshot/read_fn byte count for ctx reuse + per-invocation contexts.
+- Added read_fn short-read regression test in context read methods.
+- Fixed custom hook ctx reuse fallback to ensure custom field accessors are generated when fields are provided.
+- Files changed: src/mbpf_runtime.c, tests/test_context_read_methods.c, task_list.json.
+- Tests: make build/test_context_read_methods && ./build/test_context_read_methods (PASS).
+- Tests: make build/test_context_net_rx_v1 && ./build/test_context_net_rx_v1 (PASS).
+- Tests: make build/test_hook_tracepoint && ./build/test_hook_tracepoint (PASS).
+- Tests: make build/test_hook_security && ./build/test_hook_security (PASS).
+- Tests: make build/test_hook_net_rx && ./build/test_hook_net_rx (PASS).
+- Tests: make build/test_hook_custom && ./build/test_hook_custom (PASS).
+- Tests: ./init.sh (PASS).
+- Challenges: custom hook field accessor tests failed due to reusable ctx lacking dynamic fields.
+- Resolution: fallback to per-invocation ctx creation for custom hooks with fields.
