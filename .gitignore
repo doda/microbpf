@@ -31,3 +31,6 @@ deps/mquickjs/example_stdlib.h
 # OS files
 .DS_Store
 Thumbs.db
+
+# Looper
+.looper-init.log
