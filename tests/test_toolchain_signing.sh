@@ -11,9 +11,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="$SCRIPT_DIR/../build"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_DIR="$PROJECT_ROOT/build"
 TOOLS_DIR="$BUILD_DIR"
-MQUICKJS_DIR="$SCRIPT_DIR/../deps/mquickjs"
+MQUICKJS_DIR="$PROJECT_ROOT/deps/mquickjs"
 TMP_DIR=$(mktemp -d)
 
 cleanup() {
@@ -21,26 +22,41 @@ cleanup() {
 }
 trap cleanup EXIT
 
+skip_test() {
+    echo "SKIP: $1"
+    exit 0
+}
+
+ensure_make() {
+    if ! command -v make >/dev/null 2>&1; then
+        skip_test "make not found; install build tools or run on a machine with make."
+    fi
+}
+
+ensure_tool() {
+    local tool_path="$1"
+    local make_target="$2"
+    if [ -x "$tool_path" ]; then
+        return 0
+    fi
+    ensure_make
+    echo "Info: Building $make_target..."
+    if ! make -C "$PROJECT_ROOT" "$make_target"; then
+        skip_test "failed to build $make_target; run 'make $make_target' in $PROJECT_ROOT."
+    fi
+    if [ ! -x "$tool_path" ]; then
+        skip_test "expected $tool_path after build; run 'make $make_target' in $PROJECT_ROOT."
+    fi
+}
+
 echo "=== microBPF Toolchain Signing End-to-End Test ==="
 echo ""
 
 # Check required binaries
-if [ ! -x "$TOOLS_DIR/mbpf_sign" ]; then
-    echo "ERROR: mbpf_sign not found. Run 'make' first."
-    exit 1
-fi
-if [ ! -x "$TOOLS_DIR/mbpf_assemble" ]; then
-    echo "ERROR: mbpf_assemble not found. Run 'make' first."
-    exit 1
-fi
-if [ ! -x "$TOOLS_DIR/mbpf_manifest_gen" ]; then
-    echo "ERROR: mbpf_manifest_gen not found. Run 'make' first."
-    exit 1
-fi
-if [ ! -x "$MQUICKJS_DIR/mqjs" ]; then
-    echo "ERROR: mqjs not found. Run 'make' first."
-    exit 1
-fi
+ensure_tool "$TOOLS_DIR/mbpf_sign" "build/mbpf_sign"
+ensure_tool "$TOOLS_DIR/mbpf_assemble" "build/mbpf_assemble"
+ensure_tool "$TOOLS_DIR/mbpf_manifest_gen" "build/mbpf_manifest_gen"
+ensure_tool "$MQUICKJS_DIR/mqjs" "mquickjs"
 
 # Step 1: Generate Ed25519 keypair
 echo "Step 1: Generate Ed25519 keypair..."

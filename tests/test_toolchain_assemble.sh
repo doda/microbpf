@@ -13,19 +13,45 @@ cleanup() {
 }
 trap cleanup EXIT
 
+skip_test() {
+    echo "SKIP: $1"
+    exit 0
+}
+
+ensure_make() {
+    if ! command -v make >/dev/null 2>&1; then
+        skip_test "make not found; install build tools or run on a machine with make."
+    fi
+}
+
+ensure_tool() {
+    local tool_path="$1"
+    local make_target="$2"
+    if [ -x "$tool_path" ]; then
+        return 0
+    fi
+    ensure_make
+    echo "Info: Building $make_target..."
+    if ! make -C "$PROJECT_ROOT" "$make_target"; then
+        skip_test "failed to build $make_target; run 'make $make_target' in $PROJECT_ROOT."
+    fi
+    if [ ! -x "$tool_path" ]; then
+        skip_test "expected $tool_path after build; run 'make $make_target' in $PROJECT_ROOT."
+    fi
+}
+
 echo "=== mbpf-assemble Toolchain Test ==="
 echo ""
 
 # Check required tools exist
-if [ ! -x "$BUILD_DIR/mbpf_assemble" ]; then
-    echo "FAIL: mbpf_assemble not built"
-    exit 1
-fi
+ensure_tool "$BUILD_DIR/mbpf_assemble" "build/mbpf_assemble"
 
 if [ ! -x "$TOOLS_DIR/mbpf-assemble" ]; then
     echo "FAIL: mbpf-assemble wrapper not found"
     exit 1
 fi
+
+ensure_tool "$PROJECT_ROOT/deps/mquickjs/mqjs" "mquickjs"
 
 echo "Test 1: Basic assembly with JSON manifest"
 cat > "$TMP_DIR/manifest.json" << 'EOF'
