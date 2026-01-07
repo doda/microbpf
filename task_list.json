@@ -1545,7 +1545,7 @@
       "examples/simple_prog.js",
       "examples/net_rx_filter.js"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "refresh-package-format-docs",

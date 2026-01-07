@@ -285,3 +285,12 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Verification: ./init.sh (PASS).
 - Challenges: none.
 - Follow-ups: none.
+- update-js-api-reference: PASS.
+- Updated JS API reference to match helper signatures, map behaviors, and context fields (including per-CPU notes and custom fields).
+- Aligned code examples with examples/simple_prog.js and examples/net_rx_filter.js.
+- Files changed: docs/JS_API_REFERENCE.md.
+- Task tracking: task_list.json set update-js-api-reference completed=true.
+- Tests: ./init.sh (PASS).
+- Challenges: python not found for task_list.json update.
+- Resolution: used python3 instead.
+- Follow-ups: none.
