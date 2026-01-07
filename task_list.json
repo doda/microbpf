@@ -1490,7 +1490,7 @@
       "src/mbpf_typed_array.c",
       "src/ed25519.c"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "document-toolchain-usage",
