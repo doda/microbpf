@@ -1296,10 +1296,10 @@
       "Build libmbpf.a and confirm mbpf_runtime.c compiles without warnings/errors",
       "Run a targeted map-related test to confirm no runtime regressions"
     ],
+    "completed": true,
     "scope": [
       "src/mbpf_runtime.c"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fix-manifest-json-size-off-by-one",
@@ -1310,11 +1310,11 @@
       "Add a unit test that allocates exactly the reported size and succeeds",
       "Run manifest generator tests and fix any regressions"
     ],
+    "completed": true,
     "scope": [
       "src/mbpf_manifest_gen.c",
       "tests/test_manifest_gen.c"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "enforce-budgets-required-keys",
@@ -1325,29 +1325,29 @@
       "Add negative tests for missing max_steps/max_helpers",
       "Run package/manifest tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "src/mbpf_package.c",
       "tests/test_program_load_validation.c"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "validate-ctx-abi-version-at-run",
     "category": "bug",
-    "description": "Ensure mbpf_run validates ctx_blob abi_version against the program\u2019s required hook_ctx_abi_version before execution.",
+    "description": "Ensure mbpf_run validates ctx_blob abi_version against the program’s required hook_ctx_abi_version before execution.",
     "steps": [
       "Add ABI version checks when constructing ctx objects from ctx_blob",
       "Return a safe default without executing when the ABI version mismatches",
       "Add a test that passes a mismatched ctx_blob version and expects rejection"
     ],
+    "completed": true,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "src/mbpf_runtime.c",
       "tests/test_context_object.c"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fix-ctx-data-len-after-read-fn",
@@ -1358,32 +1358,32 @@
       "Add a test where read_fn returns fewer bytes and verify ctx.data_len equals that size",
       "Run hook/context tests and fix any regressions"
     ],
+    "completed": true,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "src/mbpf_runtime.c",
       "tests/test_context_read_methods.c"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fix-mbpf-log-allocation-free",
     "category": "bug",
-    "description": "Remove JS heap allocations from mbpf.log\u2019s success path to comply with the allocation-free helper contract.",
+    "description": "Remove JS heap allocations from mbpf.log’s success path to comply with the allocation-free helper contract.",
     "steps": [
       "Refactor mbpf.log to avoid string concatenation/String() allocations on success",
       "Add a helper test that detects allocations during mbpf.log calls",
       "Run helper/typed-array tests and fix regressions"
     ],
+    "completed": true,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "src/mbpf_runtime.c",
       "tests/test_allocation_free_helpers.c"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "toolchain-assemble-signing-test-builds-tools",
@@ -1394,11 +1394,11 @@
       "Run tests/test_toolchain_assemble.sh and tests/test_toolchain_signing.sh",
       "Fix any failures and re-run the scripts"
     ],
+    "completed": true,
     "scope": [
       "tests/test_toolchain_assemble.sh",
       "tests/test_toolchain_signing.sh"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "toolchain-signing-loads-signed-package",
@@ -1409,13 +1409,13 @@
       "Run the updated script and address any failures in loader/signing flow",
       "Re-run the test to confirm end-to-end pass"
     ],
+    "completed": true,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "tests/test_toolchain_signing.sh"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "assemble-test-endianness-strings",
@@ -1426,13 +1426,13 @@
       "Run the assemble unit test and fix any parsing issues",
       "Re-run the test to confirm spec-compliant behavior"
     ],
+    "completed": true,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "tests/test_mbpf_assemble.c"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "add-read-fn-coverage-across-hooks",
@@ -1443,6 +1443,7 @@
       "Include a short-read case and verify data_len semantics and exceptions",
       "Run the new tests, fix failures, and re-run"
     ],
+    "completed": true,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
@@ -1450,8 +1451,144 @@
       "tests/test_hook_tracepoint.c",
       "tests/test_hook_security.c",
       "tests/test_hook_custom.c"
+    ]
+  },
+  {
+    "id": "create-readme-overview",
+    "category": "docs",
+    "description": "Create a top-level README with project overview, build/test instructions, and links to detailed docs.",
+    "steps": [
+      "Review `SPEC.md`, `Makefile`, and `tools/` scripts to capture accurate build and test commands.",
+      "Write `README.md` sections for overview, prerequisites, build steps, running tests, and toolchain quickstart.",
+      "Add links to `docs/C_API_REFERENCE.md`, `docs/JS_API_REFERENCE.md`, `docs/PACKAGE_FORMAT.md`, and the new architecture/toolchain docs."
     ],
-    "completed": true
+    "scope": [
+      "README.md",
+      "SPEC.md",
+      "Makefile",
+      "tools/mbpf-compile",
+      "tools/mbpf-assemble",
+      "tools/mbpf-manifest",
+      "tools/mbpf_sign.c"
+    ],
+    "completed": false
+  },
+  {
+    "id": "architecture-overview",
+    "category": "docs",
+    "description": "Add an architecture overview describing core components, data flow, and runtime constraints.",
+    "steps": [
+      "Summarize major components from `src/mbpf_runtime.c`, `src/mbpf_package.c`, `src/mbpf_stdlib.c`, `src/mbpf_typed_array.c`, and `src/ed25519.c`.",
+      "Describe load/attach/run/unload flow and how budgets, maps, and helpers are enforced.",
+      "Add an ASCII diagram and module responsibilities in a new `docs/ARCHITECTURE.md`."
+    ],
+    "scope": [
+      "docs/ARCHITECTURE.md",
+      "src/mbpf_runtime.c",
+      "src/mbpf_package.c",
+      "src/mbpf_stdlib.c",
+      "src/mbpf_typed_array.c",
+      "src/ed25519.c"
+    ],
+    "completed": false
+  },
+  {
+    "id": "document-toolchain-usage",
+    "category": "docs",
+    "description": "Document the toolchain CLI workflow for compiling, manifest generation, assembling, and signing packages.",
+    "steps": [
+      "Extract CLI flags and usage from `tools/mbpf-compile`, `tools/mbpf-manifest`, `tools/mbpf-assemble`, and `tools/mbpf_sign.c`.",
+      "Write an end-to-end pipeline example using `examples/` inputs and the generated artifacts.",
+      "Create `docs/TOOLCHAIN.md` with command examples and troubleshooting notes."
+    ],
+    "scope": [
+      "docs/TOOLCHAIN.md",
+      "tools/mbpf-compile",
+      "tools/mbpf-manifest",
+      "tools/mbpf-assemble",
+      "tools/mbpf_sign.c",
+      "examples/simple_prog.js",
+      "examples/net_rx_filter.js"
+    ],
+    "completed": false
+  },
+  {
+    "id": "update-c-api-reference",
+    "category": "docs",
+    "description": "Update the C API reference to match all public headers and add missing API sections.",
+    "steps": [
+      "Cross-check `docs/C_API_REFERENCE.md` with `include/mbpf.h`, `include/mbpf_package.h`, and `include/mbpf_manifest_gen.h`.",
+      "Add or correct sections for debug info APIs, signature verification, bytecode helpers, and assemble APIs.",
+      "Refresh code examples to align with current structures and enums."
+    ],
+    "scope": [
+      "docs/C_API_REFERENCE.md",
+      "include/mbpf.h",
+      "include/mbpf_package.h",
+      "include/mbpf_manifest_gen.h"
+    ],
+    "completed": false
+  },
+  {
+    "id": "update-js-api-reference",
+    "category": "docs",
+    "description": "Align the JavaScript API reference with implemented helpers, map types, and context methods.",
+    "steps": [
+      "Audit helper implementations and context behavior in `src/mbpf_runtime.c` and `src/mbpf_typed_array.c`.",
+      "Update helper, map, and context sections in `docs/JS_API_REFERENCE.md` with accurate signatures and return codes.",
+      "Add or refine examples to match `examples/` programs."
+    ],
+    "scope": [
+      "docs/JS_API_REFERENCE.md",
+      "src/mbpf_runtime.c",
+      "src/mbpf_typed_array.c",
+      "examples/simple_prog.js",
+      "examples/net_rx_filter.js"
+    ],
+    "completed": false
+  },
+  {
+    "id": "refresh-package-format-docs",
+    "category": "docs",
+    "description": "Expand the package format documentation to cover debug/signature sections and assembly options.",
+    "steps": [
+      "Compare `docs/PACKAGE_FORMAT.md` against `include/mbpf_package.h` and `src/mbpf_package.c` for missing fields.",
+      "Document the DEBUG section layout, signature section structure, and CRC validation rules.",
+      "Add a brief assembly/validation example tied to the tooling behavior."
+    ],
+    "scope": [
+      "docs/PACKAGE_FORMAT.md",
+      "include/mbpf_package.h",
+      "src/mbpf_package.c"
+    ],
+    "completed": false
+  },
+  {
+    "id": "docs-index",
+    "category": "docs",
+    "description": "Create a docs index that links the README, architecture overview, API references, and package format.",
+    "steps": [
+      "Create `docs/README.md` with a short description of each document and recommended reading order.",
+      "Link to `SPEC.md`, `docs/ARCHITECTURE.md`, `docs/TOOLCHAIN.md`, and the API/package references.",
+      "Ensure section titles in the index match the target documents."
+    ],
+    "depends_on": [
+      "architecture-overview",
+      "document-toolchain-usage",
+      "update-c-api-reference",
+      "update-js-api-reference",
+      "refresh-package-format-docs"
+    ],
+    "scope": [
+      "docs/README.md",
+      "docs/ARCHITECTURE.md",
+      "docs/TOOLCHAIN.md",
+      "docs/C_API_REFERENCE.md",
+      "docs/JS_API_REFERENCE.md",
+      "docs/PACKAGE_FORMAT.md",
+      "SPEC.md"
+    ],
+    "completed": false
   },
   {
     "id": "percpu-map-persistence-integration",
@@ -1462,14 +1599,14 @@
       "Run the test and fix any persistence issues found",
       "Re-run the test to confirm per-CPU map data survives updates"
     ],
+    "completed": false,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "tests/test_map_persistence.c",
       "tests/test_percpu_map.c"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "map-iteration-lru-percpu-tests",
@@ -1480,13 +1617,13 @@
       "Run the iteration tests and fix any iterator issues",
       "Re-run to confirm coverage passes"
     ],
+    "completed": false,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "tests/test_map_iteration.c"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "helper-js-allocation-detection",
@@ -1497,14 +1634,14 @@
       "Run the test suite and fix helper implementations that allocate",
       "Re-run to confirm allocation-free contract is enforced"
     ],
+    "completed": false,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "tests/test_allocation_free_helpers.c",
       "tests/test_no_dynamic_alloc.c"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "typed-array-pointer-invalidation-test",
@@ -1515,13 +1652,13 @@
       "Run typed-array tests and address any failures",
       "Re-run to confirm pointer-safety invariants are enforced"
     ],
+    "completed": false,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "tests/test_typed_array_shim.c"
-    ],
-    "completed": false
+    ]
   },
   {
     "id": "deferred-queue-synchronization",
@@ -1532,13 +1669,13 @@
       "Add a concurrency stress test for deferred enqueue/drain",
       "Run deferred queue tests and fix any races"
     ],
+    "completed": false,
     "depends_on": [
       "fix-new-lru-compile-error"
     ],
     "scope": [
       "src/mbpf_runtime.c",
       "tests/test_deferred_queue.c"
-    ],
-    "completed": false
+    ]
   }
 ]
