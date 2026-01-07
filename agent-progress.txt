@@ -277,3 +277,11 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Tests: ./init.sh (PASS; build/test_rom_stdlib link error noted but init.sh completed).
 - Challenges: none.
 - Follow-ups: investigate build/test_rom_stdlib link error if it becomes blocking.
+- 2026-01-07 update-c-api-reference: PASS.
+- Updated C API reference with read_fn/custom field types/runtime constants and added instance heap usage + signature/bytecode notes.
+- Refreshed deferred execution example includes for stdio/unistd alignment.
+- Files changed: docs/C_API_REFERENCE.md, task_list.json.
+- Verification: ./init.sh --quick (PASS).
+- Verification: ./init.sh (PASS).
+- Challenges: none.
+- Follow-ups: none.
