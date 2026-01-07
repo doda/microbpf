@@ -258,3 +258,12 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenge: make test failed when toolchain integration couldn't find mbpf_assemble.
 - Resolution: add $(ASSEMBLE_TOOL) dependency to Makefile test target.
 - Follow-ups: investigate build/test_rom_stdlib link error reported during init.sh.
+- 2026-01-07 architecture-overview: PASS.
+- Added architecture overview doc covering runtime, package, stdlib, typed array shim, and Ed25519 modules.
+- Documented load/attach/run/unload flow, budgets, map sync, helper gating, and runtime constraints.
+- Added ASCII component/data-flow diagram with module responsibilities.
+- Files changed: docs/ARCHITECTURE.md, task_list.json.
+- Tests: ./init.sh (PASS).
+- Challenges: init.sh --quick timed out at 10s initially.
+- Resolution: reran ./init.sh --quick with higher timeout; reran full ./init.sh after changes.
+- Follow-ups: none.
