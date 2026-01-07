@@ -59,6 +59,7 @@ Programs run on MQuickJS, a compact JavaScript engine supporting approximately E
 - No `eval` (unless explicitly enabled)
 - No filesystem or network APIs
 - Optional `console.log` (debug mode only, maps to `mbpf.log`)
+- Binary buffers must be `Uint8Array` (other TypedArrays are not supported)
 
 ### Memory and Execution Bounds
 
@@ -182,6 +183,8 @@ mbpf.log(level, message);
 **Notes:**
 - In production mode, log messages are rate-limited (100 per second)
 - In debug mode, all messages are logged
+- `level` is clamped to 0-3; non-numeric levels default to 1
+- `message` must be a string; other types throw `TypeError`
 
 **Example:**
 ```javascript
@@ -285,9 +288,10 @@ var success = mbpf.emit(eventId, bytes);
 - `false`: Event was too large or could not fit in the buffer
 
 **Notes:**
-- Maximum event size is 256 bytes by default
-- Events are stored in a ring buffer and can be read by the host
-- When the buffer is full, oldest events are dropped
+- `eventId` is stored as an unsigned 32-bit value
+- Maximum event size is 256 bytes by default (from `MBPF_EMIT_MAX_EVENT_SIZE`)
+- Events are stored in a per-program ring buffer and can be read by the host
+- When the buffer is full, oldest events are dropped to make room
 
 **Example:**
 ```javascript
@@ -353,6 +357,10 @@ var found = mbpf.mapLookup(mapId, key, outValue);
 
 **Returns:** `boolean` - `true` if found, `false` otherwise
 
+**Notes:**
+- Supported map types: array, hash, LRU hash, per-CPU array, per-CPU hash
+- Ring buffer and counter maps do not support low-level lookup/update/delete helpers
+
 ### mbpf.mapUpdate
 
 Low-level map update by numeric ID. Capability: `CAP_MAP_WRITE`.
@@ -369,6 +377,10 @@ var success = mbpf.mapUpdate(mapId, key, value, flags);
 
 **Returns:** `boolean` - `true` on success
 
+**Notes:**
+- `flags` default to `0` when omitted
+- Supported map types: array, hash, LRU hash, per-CPU array, per-CPU hash
+
 ### mbpf.mapDelete
 
 Low-level map delete by numeric ID. Capability: `CAP_MAP_WRITE`.
@@ -382,6 +394,9 @@ var found = mbpf.mapDelete(mapId, key);
 - `key` (number|Uint8Array): Key to delete (number for array maps, Uint8Array for hash/LRU maps)
 
 **Returns:** `boolean` - `true` if key was found and deleted
+
+**Notes:**
+- Supported map types: array, hash, LRU hash, per-CPU array, per-CPU hash
 
 ---
 
@@ -543,6 +558,7 @@ Same as hash maps: `lookup`, `update`, `delete`, `nextKey`.
 - `lookup()` moves the entry to the front of the LRU list (most recently used)
 - `update()` moves the entry to the front
 - When at capacity, `update()` with a new key evicts the least recently used entry
+- `update()` returns `false` only if eviction fails (no slots available)
 
 **Example:**
 ```javascript
@@ -589,6 +605,11 @@ var cpu = maps.cpu_counters.cpuId();
 ```
 
 - Returns: `number` - Current instance index (0-based)
+
+**Notes:**
+- Per-CPU array maps provide `lookup()` and `update()` only
+- Per-CPU hash maps provide `lookup()`, `update()`, `delete()`, and `nextKey()`
+- Helper budget tracking applies, but capability checks are not enforced for per-CPU maps in the current runtime
 
 **Example:**
 ```javascript
@@ -663,7 +684,7 @@ var len = maps.events.peek(outBuffer);
 ```
 
 - `outBuffer` (Uint8Array): Buffer to receive event data
-- Returns: `number` - Actual event length (0 if empty)
+- Returns: `number` - Actual event length (0 if empty). Copies up to `outBuffer.length` bytes.
 
 #### consume()
 
@@ -765,6 +786,7 @@ var byte = ctx.readU8(offset);
 
 - `offset` (number): Byte offset
 - Returns: `number` - Unsigned byte value (0-255)
+- Throws: `TypeError` if `offset` is not a number
 - Throws: `RangeError` if offset is out of bounds
 
 #### readU16LE(offset)
@@ -777,6 +799,7 @@ var value = ctx.readU16LE(offset);
 
 - `offset` (number): Byte offset
 - Returns: `number` - Unsigned 16-bit value
+- Throws: `TypeError` if `offset` is not a number
 - Throws: `RangeError` if offset+2 exceeds data length
 
 #### readU32LE(offset)
@@ -789,6 +812,7 @@ var value = ctx.readU32LE(offset);
 
 - `offset` (number): Byte offset
 - Returns: `number` - Unsigned 32-bit value
+- Throws: `TypeError` if `offset` is not a number
 - Throws: `RangeError` if offset+4 exceeds data length
 
 #### readBytes(offset, length, outBuffer)
@@ -802,8 +826,9 @@ var copied = ctx.readBytes(offset, length, outBuffer);
 - `offset` (number): Byte offset
 - `length` (number): Number of bytes to copy
 - `outBuffer` (Uint8Array): Destination buffer
-- Returns: `number` - Bytes actually copied
-- Throws: `RangeError` if offset is out of bounds
+- Returns: `number` - Bytes actually copied (min of `length`, remaining data, and `outBuffer.length`)
+- Throws: `TypeError` if arguments have wrong types
+- Throws: `RangeError` if `offset` is out of bounds or data is unavailable
 
 ### NET_RX Context
 
@@ -823,6 +848,9 @@ Network packet receive context. Hook type: `MBPF_HOOK_NET_RX`.
 - `MBPF_CTX_F_TRUNCATED` (1): Data was truncated
 
 **Methods:** `readU8`, `readU16LE`, `readU32LE`, `readBytes`
+
+**Notes:**
+- If `read_fn` is used, `data_len` reflects the bytes actually read
 
 **Return codes:**
 - `0` (`MBPF_NET_PASS`): Allow packet
@@ -870,6 +898,9 @@ Tracepoint event context. Hook type: `MBPF_HOOK_TRACEPOINT`.
 
 **Methods:** `readU8`, `readU16LE`, `readU32LE`, `readBytes` (if data present)
 
+**Notes:**
+- `timestamp` is provided as a JavaScript number and may lose precision for large values
+
 **Return codes:**
 - `0`: Success
 - Non-zero: Soft failure (counted in stats)
@@ -897,6 +928,9 @@ Periodic timer context. Hook type: `MBPF_HOOK_TIMER`.
 | `flags` | number | Context flags |
 
 **Methods:** None (no data buffer).
+
+**Notes:**
+- `timestamp` and `invocation_count` are provided as JavaScript numbers and may lose precision for large values
 
 **Return codes:**
 - `0`: Success
@@ -960,6 +994,20 @@ Platform-defined custom hook context. Hook type: `MBPF_HOOK_CUSTOM`.
 
 **Methods:**
 - `readU8`, `readU16LE`, `readU32LE`, `readBytes`
+
+**Custom field accessors:**
+Custom hooks can provide a schema (`fields`) with typed field accessors. Field names become read-only properties:
+
+| Field Type | JS Value |
+|-----------|----------|
+| `U8`/`I8` | number |
+| `U16`/`I16` | number |
+| `U32`/`I32` | number |
+| `U64` | `[lo, hi]` |
+| `I64` | `[lo, hi]` (signed high word) |
+| `BYTES` | `Uint8Array` slice |
+
+Field accessors are generated only when a schema is provided; otherwise only the base properties and read methods are available.
 
 **Return codes:** Platform-defined.
 
@@ -1043,117 +1091,27 @@ mbpf.u64StoreLE(bytes, 0, result);
 
 ## Code Examples
 
-### Packet Filter
+### Simple Program (examples/simple_prog.js)
 
 ```javascript
-// Drop packets smaller than 64 bytes or with source IP 10.0.0.1
 function mbpf_prog(ctx) {
-    if (ctx.pkt_len < 64) {
-        return 1;  // DROP
-    }
-
-    // Check L2 protocol (offset 12-13 in Ethernet frame)
-    if (ctx.data_len >= 14) {
-        var etherType = ctx.readU16LE(12);
-        if (etherType === 0x0800 && ctx.data_len >= 34) {
-            // IPv4 packet - check source IP at offset 26-29
-            var srcIP = ctx.readU32LE(26);
-            if (srcIP === 0x0100000A) {  // 10.0.0.1 in LE
-                return 1;  // DROP
-            }
-        }
-    }
-
-    return 0;  // PASS
+    return 0;
 }
 ```
 
-### Packet Counter
-
-```javascript
-function mbpf_init() {
-    // Initialize counters
-    var zero = new Uint8Array(8);
-    maps.counters.update(0, zero);  // Total packets
-    maps.counters.update(1, zero);  // Total bytes
-}
-
-function mbpf_prog(ctx) {
-    // Increment packet counter
-    maps.stats.add(0, 1);
-
-    // Increment byte counter
-    maps.stats.add(1, ctx.pkt_len);
-
-    return 0;  // PASS
-}
-```
-
-### Event Logger
+### NET_RX Filter (examples/net_rx_filter.js)
 
 ```javascript
 function mbpf_prog(ctx) {
-    // Log interesting packets
-    if (ctx.pkt_len > 1500) {
-        var event = new Uint8Array(12);
-        // Store ifindex (4 bytes)
-        event[0] = ctx.ifindex & 0xFF;
-        event[1] = (ctx.ifindex >> 8) & 0xFF;
-        event[2] = (ctx.ifindex >> 16) & 0xFF;
-        event[3] = (ctx.ifindex >> 24) & 0xFF;
-        // Store pkt_len (4 bytes)
-        event[4] = ctx.pkt_len & 0xFF;
-        event[5] = (ctx.pkt_len >> 8) & 0xFF;
-        event[6] = (ctx.pkt_len >> 16) & 0xFF;
-        event[7] = (ctx.pkt_len >> 24) & 0xFF;
-        // Store l2_proto (4 bytes)
-        event[8] = ctx.l2_proto & 0xFF;
-        event[9] = (ctx.l2_proto >> 8) & 0xFF;
-        event[10] = 0;
-        event[11] = 0;
-
-        mbpf.emit(1, event);
+    if (ctx.pkt_len < 1) {
+        return 0; // PASS
     }
 
-    return 0;  // PASS
-}
-```
-
-### Rate Limiter with Hash Map
-
-```javascript
-var RATE_LIMIT = 100;  // packets per source
-
-function mbpf_prog(ctx) {
-    if (ctx.data_len < 34) {
-        return 0;  // PASS (can't read IP header)
+    var b0 = ctx.readU8(0);
+    if (b0 === 0xFF) {
+        return 1; // DROP
     }
 
-    // Extract source IP as key
-    var key = new Uint8Array(4);
-    ctx.readBytes(26, 4, key);
-
-    var value = new Uint8Array(4);
-    if (!maps.rate.lookup(key, value)) {
-        // First packet from this source
-        value[0] = 1;
-        maps.rate.update(key, value);
-        return 0;  // PASS
-    }
-
-    // Increment and check counter
-    var count = value[0] | (value[1] << 8) | (value[2] << 16) | (value[3] << 24);
-    if (count >= RATE_LIMIT) {
-        return 1;  // DROP
-    }
-
-    count++;
-    value[0] = count & 0xFF;
-    value[1] = (count >> 8) & 0xFF;
-    value[2] = (count >> 16) & 0xFF;
-    value[3] = (count >> 24) & 0xFF;
-    maps.rate.update(key, value);
-
-    return 0;  // PASS
+    return 0; // PASS
 }
 ```
