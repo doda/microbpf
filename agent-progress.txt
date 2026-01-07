@@ -249,3 +249,12 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Tests: ./init.sh --quick (PASS) and ./init.sh (PASS).
 - Challenges: none.
 [2026-01-07T18:51:21.730Z] Instruction: "Write comprehensive documentation including README..." -> 7 task(s)
+- 2026-01-07: create-readme-overview PASS.
+- Added top-level README with overview, build/test steps, toolchain quickstart, and docs links.
+- Fixed Makefile test target to build mbpf_assemble for toolchain integration test.
+- Files changed: README.md, Makefile, task_list.json.
+- Tests: make test (PASS).
+- Tests: ./init.sh (PASS; build/test_rom_stdlib link error still emitted but script reports success).
+- Challenge: make test failed when toolchain integration couldn't find mbpf_assemble.
+- Resolution: add $(ASSEMBLE_TOOL) dependency to Makefile test target.
+- Follow-ups: investigate build/test_rom_stdlib link error reported during init.sh.
