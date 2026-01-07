@@ -1588,7 +1588,7 @@
       "docs/PACKAGE_FORMAT.md",
       "SPEC.md"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "percpu-map-persistence-integration",

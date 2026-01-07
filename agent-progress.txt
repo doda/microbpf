@@ -304,3 +304,13 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenges: init.sh logs still show build/test_rom_stdlib link error from deps/mquickjs.
 - Resolution: none in this session; init.sh reported overall PASS.
 - Follow-ups: investigate build/test_rom_stdlib link error if it becomes blocking.
+- 2026-01-07 docs-index: PASS.
+- Added docs index with reading order and per-doc summaries linking core docs.
+- Files changed: docs/README.md.
+- Task tracking: task_list.json set docs-index completed=true.
+- Verification: ./init.sh --quick (PASS).
+- Verification: ./init.sh (PASS).
+- Challenge: none.
+- Resolution: none needed.
+- Follow-ups: none.
+- Notes: section titles in docs index match target document H1s.
