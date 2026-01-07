@@ -209,13 +209,13 @@ Optional section containing debug symbols for development and provenance trackin
 [4 bytes: flags]
 [32 bytes: source_hash (SHA-256)]
 [4 bytes: entry_symbol_len]
-[entry_symbol_len bytes: entry_symbol (null-terminated)]
+[entry_symbol_len bytes: entry_symbol]
 [4 bytes: hook_name_len]
-[hook_name_len bytes: hook_name (null-terminated)]
+[hook_name_len bytes: hook_name]
 [4 bytes: map_count]
 For each map:
   [4 bytes: name_len]
-  [name_len bytes: name (null-terminated)]
+  [name_len bytes: name]
 ```
 
 #### Debug Flags
@@ -223,6 +223,16 @@ For each map:
 | Flag | Value | Description |
 |------|-------|-------------|
 | `MBPF_DEBUG_FLAG_HAS_SOURCE_HASH` | `0x01` | source_hash field is valid |
+
+#### String Encoding Notes
+
+- Strings are length-prefixed with a 32-bit little-endian byte count.
+- The bytes are treated as raw bytes; tools typically write a trailing NUL, but the parser does not require it.
+- Zero-length strings are allowed.
+- Parsers cap copied strings at `MBPF_DEBUG_MAX_SYMBOL_LEN - 1` and NUL-terminate the in-memory copy.
+- `map_count` is validated by the loader and must be ≤ 256.
+
+If `MBPF_DEBUG_FLAG_HAS_SOURCE_HASH` is not set, `source_hash` is expected to be zeroed.
 
 ### SIG Section
 
@@ -234,7 +244,11 @@ Contains a 64-byte Ed25519 signature. This section must be the **last section** 
 [64 bytes: Ed25519 signature]
 ```
 
-The signature covers all bytes from file offset 0 up to (but excluding) the signature section data.
+The signature covers all bytes from file offset 0 up to (but excluding) the signature section data. The loader enforces:
+
+- `length == 64`
+- `sig_offset + 64 == file_length` (no trailing unsigned bytes)
+- Signature coverage uses `sig_offset` as the signed length
 
 ---
 
@@ -435,7 +449,7 @@ The package format supports two levels of CRC32 validation:
 
 If `file_crc32` in the header is non-zero, it must equal the CRC32 of:
 - All bytes from offset 0 to the end of file
-- Excluding the `file_crc32` field itself (treated as 0 during computation)
+- **Excluding bytes 16–19** (the `file_crc32` field itself is skipped during computation)
 
 #### Per-Section CRC
 
@@ -616,7 +630,7 @@ mbpf_section_input_t sections[] = {
 mbpf_assemble_opts_t opts = {
     .compute_file_crc = 1,
     .compute_section_crcs = 1,
-    .flags = 0,
+    .flags = 0,  // MBPF_FLAG_DEBUG or MBPF_FLAG_SIGNED (when applicable)
 };
 
 size_t pkg_size = mbpf_package_size(sections, 2);
@@ -625,6 +639,27 @@ size_t out_len = pkg_size;
 
 mbpf_package_assemble(sections, 2, &opts, pkg, &out_len);
 ```
+
+#### Assembly and Validation (Tooling Example)
+
+The `mbpf_assemble` CLI wires assembly options directly:
+
+```bash
+# Assemble with CRCs enabled (sets file_crc32 and per-section CRCs).
+mbpf_assemble -m manifest.json -b prog.qjbc --crc -o prog.mbpf
+
+# Optionally add debug info and set the header DEBUG flag.
+mbpf_assemble -m manifest.json -b prog.qjbc -d debug.bin --debug -o prog.mbpf
+
+# Sign and verify (mbpf_sign adds MBPF_FLAG_SIGNED and a SIG section).
+mbpf_sign sign -k keypair.key -i prog.mbpf -o prog.signed.mbpf
+mbpf_sign verify -k public.key -i prog.signed.mbpf
+```
+
+When CRCs are present, loaders call `mbpf_package_validate_crc()` and
+`mbpf_package_validate_section_crc()` to enforce them. When a signature is
+present, loaders call `mbpf_package_verify_signature()` to enforce the
+signature rules above.
 
 ### Step 4: Sign Package (Optional)
 
