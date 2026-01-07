@@ -294,3 +294,13 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenges: python not found for task_list.json update.
 - Resolution: used python3 instead.
 - Follow-ups: none.
+- refresh-package-format-docs: PASS.
+- Expanded package format docs with DEBUG/SIG details, CRC rules, and assembly/validation tooling notes.
+- Updated string encoding and validation constraints for debug info plus signature enforcement rules.
+- Added tooling-aligned assembly/validation example with CRC/signing behavior.
+- Files changed: docs/PACKAGE_FORMAT.md, task_list.json.
+- Tests: make test (PASS).
+- Tests: ./init.sh (PASS; build/test_rom_stdlib link error reported but init.sh completed).
+- Challenges: init.sh logs still show build/test_rom_stdlib link error from deps/mquickjs.
+- Resolution: none in this session; init.sh reported overall PASS.
+- Follow-ups: investigate build/test_rom_stdlib link error if it becomes blocking.
