@@ -267,3 +267,13 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Challenges: init.sh --quick timed out at 10s initially.
 - Resolution: reran ./init.sh --quick with higher timeout; reran full ./init.sh after changes.
 - Follow-ups: none.
+- document-toolchain-usage: PASS.
+- Added toolchain CLI doc covering compile/manifest/assemble/sign flows and options.
+- Wrote end-to-end and minimal examples using examples/net_rx_filter.js and examples/simple_prog.js.
+- Files changed: docs/TOOLCHAIN.md.
+- Task tracking: task_list.json (completed document-toolchain-usage).
+- Tests: tests/test_toolchain_assemble.sh (PASS).
+- Tests: tests/test_toolchain_signing.sh (PASS).
+- Tests: ./init.sh (PASS; build/test_rom_stdlib link error noted but init.sh completed).
+- Challenges: none.
+- Follow-ups: investigate build/test_rom_stdlib link error if it becomes blocking.
