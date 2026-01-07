@@ -248,3 +248,4 @@ docs-package-format: documented .mbpf package format for tooling authors.
 - Tests: make build/test_hook_custom && ./build/test_hook_custom (PASS).
 - Tests: ./init.sh --quick (PASS) and ./init.sh (PASS).
 - Challenges: none.
+[2026-01-07T18:51:21.730Z] Instruction: "Write comprehensive documentation including README..." -> 7 task(s)
