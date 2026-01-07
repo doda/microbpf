@@ -1527,7 +1527,7 @@
       "include/mbpf_package.h",
       "include/mbpf_manifest_gen.h"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "update-js-api-reference",

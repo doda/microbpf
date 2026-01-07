@@ -14,8 +14,10 @@ This document provides a comprehensive reference for embedding microBPF in C app
   - [Statistics](#statistics)
   - [Hook Types](#hook-types)
   - [Context Structures](#context-structures)
+  - [Custom Field Types](#custom-field-types)
   - [Map Types](#map-types)
   - [Capabilities](#capabilities)
+  - [Runtime Constants](#runtime-constants)
   - [Package and Manifest Structures](#package-and-manifest-structures)
 - [Core API Functions](#core-api-functions)
   - [Runtime Lifecycle](#runtime-lifecycle)
@@ -268,6 +270,16 @@ Security hooks:
 
 All context structures include an `abi_version` field (always 1 for current version).
 
+#### Read Function Type
+
+```c
+typedef int (*mbpf_read_bytes_fn)(const void *ctx_blob,
+                                  uint32_t off, uint32_t len, uint8_t *dst);
+```
+
+Optional scatter-gather reader for contexts that cannot expose a contiguous data buffer.
+Returns the number of bytes copied or a negative error code.
+
 #### NET_RX Context (v1)
 
 ```c
@@ -375,6 +387,22 @@ typedef struct mbpf_custom_field {
 #define MBPF_CTX_F_TRUNCATED (1u << 0)  // Data was truncated
 ```
 
+### Custom Field Types
+
+```c
+typedef enum {
+    MBPF_FIELD_U8     = 1,
+    MBPF_FIELD_U16    = 2,
+    MBPF_FIELD_U32    = 3,
+    MBPF_FIELD_U64    = 4,
+    MBPF_FIELD_I8     = 5,
+    MBPF_FIELD_I16    = 6,
+    MBPF_FIELD_I32    = 7,
+    MBPF_FIELD_I64    = 8,
+    MBPF_FIELD_BYTES  = 9,  // Raw byte array
+} mbpf_field_type_t;
+```
+
 ### Map Types
 
 ```c
@@ -405,6 +433,14 @@ Capabilities control which helpers a program can use:
 #define MBPF_CAP_TIME         (1 << 5)  // mbpf.nowNs()
 #define MBPF_CAP_STATS        (1 << 6)  // mbpf.stats()
 ```
+
+### Runtime Constants
+
+```c
+#define MBPF_MIN_HEAP_SIZE 8192
+```
+
+Minimum heap size (bytes) required for program loading.
 
 ### Package and Manifest Structures
 
@@ -760,6 +796,14 @@ mbpf_instance_t *mbpf_program_get_instance(mbpf_program_t *prog, uint32_t idx);
 ```
 
 Gets a specific instance by index.
+
+#### mbpf_instance_heap_used
+
+```c
+size_t mbpf_instance_heap_used(mbpf_instance_t *inst);
+```
+
+Returns the current heap usage for an instance.
 
 #### mbpf_program_circuit_open
 
@@ -1287,6 +1331,9 @@ int mbpf_package_verify_signature(const void *data, size_t len,
 ```
 
 Verifies the package signature.
+If `opts->public_key` is NULL and a signature is present, the call fails.
+Set `opts->allow_unsigned` for development flows or `opts->production_mode`
+to enforce signed-only packages.
 
 #### mbpf_package_is_signed
 
@@ -1305,6 +1352,7 @@ int mbpf_package_get_signature(const void *data, size_t len,
 ```
 
 Gets the signature bytes.
+`out_data_len` receives the length of data covered by the signature.
 
 ### Bytecode Operations
 
@@ -1318,6 +1366,9 @@ int mbpf_bytecode_load(struct JSContext *ctx,
 ```
 
 Loads bytecode into a JS context.
+The bytecode buffer must be writable because relocation happens in place.
+If `out_main_func` is non-NULL, it should point to a `JSValue` to receive
+the module execution result.
 
 #### mbpf_bytecode_check
 
@@ -1557,7 +1608,9 @@ void access_program_maps(mbpf_program_t *prog) {
 
 ```c
 #include "mbpf.h"
+#include <stdio.h>
 #include <pthread.h>
+#include <unistd.h>
 
 static mbpf_deferred_queue_t *g_queue;
 static pthread_t g_worker;
@@ -1619,7 +1672,7 @@ void cleanup_deferred_execution(void) {
 
 | Requirement | Value | Notes |
 |-------------|-------|-------|
-| Minimum heap size | 8192 bytes | Per MBPF_MIN_HEAP_SIZE |
+| Minimum heap size | MBPF_MIN_HEAP_SIZE (8192 bytes) | Per MBPF_MIN_HEAP_SIZE |
 | Word size | 32 or 64 bit | Must match bytecode |
 | Endianness | Little or Big | Must match bytecode |
 
